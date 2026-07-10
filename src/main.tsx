@@ -105,6 +105,18 @@ type FilterState = {
   duplicate: "all" | "possible" | "resolved" | "unique";
 };
 
+type ProjectStats = {
+  total: number;
+  duplicates: number;
+  reviewerA: number;
+  reviewerB: number;
+  conflicts: number;
+  finalIncluded: number;
+  excluded: number;
+  maybe: number;
+  fullTextIncluded: number;
+};
+
 const STORAGE_KEY = "meta_screening_project_v1";
 const STORAGE_META_KEY = `${STORAGE_KEY}_meta`;
 const STORAGE_DB_NAME = "meta_screening_project_db";
@@ -113,6 +125,9 @@ const STORAGE_PROJECT_ID = "active";
 const SCREENING_PAGE_SIZE = 100;
 const REVIEW_PAGE_SIZE = 40;
 const AUDIT_PAGE_SIZE = 80;
+const LARGE_PROJECT_REFERENCE_COUNT = 5000;
+const AUTOSAVE_DELAY_MS = 2500;
+const MAX_LOCAL_STORAGE_BACKUP_BYTES = 4 * 1024 * 1024;
 const roleLabels: Record<Role, string> = {
   reviewerA: "筛选者 A",
   reviewerB: "筛选者 B",
@@ -218,6 +233,14 @@ const knownHeaderNames = new Set([
   "publicationdate"
 ]);
 
+type ProjectIndex = {
+  byId: Map<string, ReferenceRecord>;
+  conflicts: ReferenceRecord[];
+  finalIncluded: ReferenceRecord[];
+  fullTextCandidates: ReferenceRecord[];
+  stats: ProjectStats;
+};
+
 function App() {
   const [project, setProject] = React.useState<ReviewProject>(readProject);
   const [role, setRole] = React.useState<Role>("reviewerA");
@@ -227,6 +250,7 @@ function App() {
   const [message, setMessage] = React.useState("项目已保存在本机浏览器，可随时导出备份。");
   const [storageReady, setStorageReady] = React.useState(false);
   const [storageStatus, setStorageStatus] = React.useState("正在检查本机保存状态");
+  const deferredFilters = React.useDeferredValue(filters);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -261,36 +285,44 @@ function App() {
           } else if (result.localStorageSaved) {
             setStorageStatus(`已保存到浏览器临时存储：${formatBytes(result.bytes)}`);
           } else {
-            setStorageStatus("自动保存失败，请立即导出项目备份");
+            setStorageStatus(`已保存到本机数据库，浏览器临时存储仅保留索引：${formatBytes(result.bytes)}`);
           }
         })
         .catch(() => {
           setStorageStatus("自动保存失败，请立即导出项目备份");
         });
-    }, 600);
+    }, AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [project, storageReady]);
 
+  const projectIndex = React.useMemo(() => buildProjectIndex(project.references), [project.references]);
   const visibleReferences = React.useMemo(
-    () => applyFilters(project.references, filters, role),
-    [project.references, filters, role]
+    () => applyFilters(project.references, deferredFilters, role),
+    [project.references, deferredFilters, role]
   );
-  const active = project.references.find((reference) => reference.id === activeId) || visibleReferences[0] || project.references[0] || null;
-  const stats = React.useMemo(() => buildStats(project), [project]);
-  const conflicts = React.useMemo(() => project.references.filter(isConflict), [project.references]);
-  const finalIncluded = React.useMemo(
-    () => project.references.filter((reference) => finalDecision(reference) === "include"),
-    [project.references]
-  );
+  const active = projectIndex.byId.get(activeId) || visibleReferences[0] || project.references[0] || null;
+  const { conflicts, finalIncluded, fullTextCandidates, stats } = projectIndex;
 
   React.useEffect(() => {
-    if (visibleReferences.length && !visibleReferences.some((reference) => reference.id === activeId)) {
+    const activeReference = projectIndex.byId.get(activeId);
+    if (visibleReferences.length && (!activeReference || !referenceMatchesFilters(activeReference, deferredFilters, role))) {
       setActiveId(visibleReferences[0].id);
     }
-  }, [activeId, visibleReferences]);
+  }, [activeId, deferredFilters, projectIndex.byId, role, visibleReferences]);
 
   function updateProject(updater: (current: ReviewProject) => ReviewProject) {
     setProject((current) => ({ ...updater(current), updatedAt: nowIso() }));
+  }
+
+  function updateReference(referenceId: string, updater: (reference: ReferenceRecord) => ReferenceRecord, actor: Role, action: string, detail: string) {
+    updateProject((current) => {
+      const target = current.references.find((reference) => reference.id === referenceId);
+      if (!target) return current;
+      return logProject({
+        ...current,
+        references: replaceReference(current.references, referenceId, updater)
+      }, actor, action, target.title || "文献", detail);
+    });
   }
 
   function createNewProject() {
@@ -330,12 +362,19 @@ function App() {
     if (!fileList?.length) return;
     const imported: ReferenceRecord[] = [];
     const errors: string[] = [];
+    const files = Array.from(fileList);
 
-    for (const file of Array.from(fileList)) {
+    setMessage(`正在读取 ${files.length} 个题录文件，大文件导入时请不要关闭页面。`);
+    await yieldToBrowser();
+
+    for (const [fileIndex, file] of files.entries()) {
       try {
         const text = await file.text();
+        setMessage(`正在解析 ${file.name}（${fileIndex + 1}/${files.length}）。`);
+        await yieldToBrowser();
         const records = parseReferenceFile(file.name, text);
         imported.push(...records);
+        await yieldToBrowser();
       } catch (error) {
         errors.push(`${file.name}: ${error instanceof Error ? error.message : "无法读取"}`);
       }
@@ -345,6 +384,9 @@ function App() {
       setMessage(errors.length ? errors.join("；") : "没有识别到可导入的题录。");
       return;
     }
+
+    setMessage(`已识别 ${imported.length} 条题录，正在合并并重算重复记录。`);
+    await yieldToBrowser();
 
     updateProject((current) => {
       const merged = [...current.references, ...imported];
@@ -388,31 +430,24 @@ function App() {
       reason = selected.trim();
     }
 
-    updateProject((current) => {
-      const nextReferences = current.references.map((reference) => {
-        if (reference.id !== referenceId) return reference;
-        return {
-          ...reference,
-          decisions: {
-            ...reference.decisions,
-            [role]: {
-              decision,
-              reason,
-              note,
-              decidedBy: role,
-              decidedAt: nowIso()
-            }
-          }
-        };
-      });
-      const target = current.references.find((reference) => reference.id === referenceId)?.title || "文献";
-      return logProject({ ...current, references: nextReferences }, role, "题名摘要筛选", target, decisionLabels[decision]);
-    });
+    updateReference(referenceId, (reference) => ({
+      ...reference,
+      decisions: {
+        ...reference.decisions,
+        [role]: {
+          decision,
+          reason,
+          note,
+          decidedBy: role,
+          decidedAt: nowIso()
+        }
+      }
+    }), role, "题名摘要筛选", decisionLabels[decision]);
   }
 
   function revealBlinding() {
-    const incompleteA = project.references.filter((reference) => !reference.decisions.reviewerA).length;
-    const incompleteB = project.references.filter((reference) => !reference.decisions.reviewerB).length;
+    const incompleteA = stats.total - stats.reviewerA;
+    const incompleteB = stats.total - stats.reviewerB;
     if (incompleteA || incompleteB) {
       const confirmed = window.confirm(`筛选尚未全部完成：A 未筛 ${incompleteA} 篇，B 未筛 ${incompleteB} 篇。仍要揭盲吗？`);
       if (!confirmed) return;
@@ -436,45 +471,31 @@ function App() {
       reason = selected.trim();
     }
 
-    updateProject((current) => {
-      const nextReferences = current.references.map((reference) => reference.id === referenceId
-        ? {
-            ...reference,
-            adjudication: {
-              decision,
-              reason,
-              note,
-              decidedBy: role,
-              decidedAt: nowIso()
-            }
-          }
-        : reference);
-      const target = current.references.find((reference) => reference.id === referenceId)?.title || "文献";
-      return logProject({ ...current, references: nextReferences }, role, "第三人裁决", target, decisionLabels[decision]);
-    });
+    updateReference(referenceId, (reference) => ({
+      ...reference,
+      adjudication: {
+        decision,
+        reason,
+        note,
+        decidedBy: role,
+        decidedAt: nowIso()
+      }
+    }), role, "第三人裁决", decisionLabels[decision]);
   }
 
   function updateDuplicate(referenceId: string, status: ReferenceRecord["duplicateStatus"]) {
-    updateProject((current) => {
-      const target = current.references.find((reference) => reference.id === referenceId);
-      const nextReferences = current.references.map((reference) => reference.id === referenceId
-        ? { ...reference, duplicateStatus: status }
-        : reference);
-      return logProject({ ...current, references: nextReferences }, role, "处理重复", target?.title || "文献", duplicateLabel(status));
-    });
+    updateReference(referenceId, (reference) => ({
+      ...reference,
+      duplicateStatus: status
+    }), role, "处理重复", duplicateLabel(status));
   }
 
   function updateFullText(referenceId: string, patch: Partial<FullTextReview>) {
-    updateProject((current) => {
-      const nextReferences = current.references.map((reference) => {
-        if (reference.id !== referenceId) return reference;
-        const nextFullText = { ...reference.fullText, ...patch };
-        if (patch.decision) nextFullText.reviewedAt = nowIso();
-        return { ...reference, fullText: nextFullText };
-      });
-      const target = current.references.find((reference) => reference.id === referenceId)?.title || "文献";
-      return logProject({ ...current, references: nextReferences }, role, "全文复筛", target, summarizeFullTextPatch(patch));
-    });
+    updateReference(referenceId, (reference) => {
+      const nextFullText = { ...reference.fullText, ...patch };
+      if (patch.decision) nextFullText.reviewedAt = nowIso();
+      return { ...reference, fullText: nextFullText };
+    }, role, "全文复筛", summarizeFullTextPatch(patch));
   }
 
   function addExtractionField() {
@@ -502,16 +523,10 @@ function App() {
   }
 
   function updateExtraction(referenceId: string, field: string, value: string) {
-    updateProject((current) => ({
-      ...current,
-      references: current.references.map((reference) => reference.id === referenceId
-        ? { ...reference, extraction: { ...reference.extraction, [field]: value } }
-        : reference),
-      auditLog: [
-        createAudit(role, "更新数据提取", current.references.find((reference) => reference.id === referenceId)?.title || "文献", field),
-        ...current.auditLog
-      ]
-    }));
+    updateReference(referenceId, (reference) => ({
+      ...reference,
+      extraction: { ...reference.extraction, [field]: value }
+    }), role, "更新数据提取", field);
   }
 
   function exportProjectBackup() {
@@ -702,7 +717,7 @@ function App() {
           ) : null}
 
           {stage === "fullText" ? (
-            <FullTextView references={project.references.filter((reference) => finalDecision(reference) === "include" || finalDecision(reference) === "maybe")} updateFullText={updateFullText} />
+            <FullTextView references={fullTextCandidates} updateFullText={updateFullText} />
           ) : null}
 
           {stage === "extraction" ? (
@@ -732,7 +747,7 @@ function App() {
   );
 }
 
-function StatusStrip({ stats, message, storageStatus, blindingRevealed, onReveal }: { stats: ReturnType<typeof buildStats>; message: string; storageStatus: string; blindingRevealed: boolean; onReveal: () => void }) {
+function StatusStrip({ stats, message, storageStatus, blindingRevealed, onReveal }: { stats: ProjectStats; message: string; storageStatus: string; blindingRevealed: boolean; onReveal: () => void }) {
   return (
     <section className="statusStrip">
       <div>
@@ -1150,7 +1165,7 @@ function ExportView({ exportCsv, exportExtraction, exportPrisma, exportWordRepor
   exportExtraction: () => void;
   exportPrisma: () => void;
   exportWordReport: () => void;
-  stats: ReturnType<typeof buildStats>;
+  stats: ProjectStats;
 }) {
   return (
     <section className="contentBlock">
@@ -1314,11 +1329,11 @@ function shouldUseStoredProject(stored: ReviewProject, current: ReviewProject) {
 }
 
 async function saveProjectToBrowserStorage(project: ReviewProject): Promise<BrowserSaveResult> {
-  const json = JSON.stringify(project);
+  const estimatedBytes = estimateProjectBytes(project);
   const result: BrowserSaveResult = {
     indexedDbSaved: false,
     localStorageSaved: false,
-    bytes: new Blob([json]).size
+    bytes: estimatedBytes
   };
 
   try {
@@ -1329,6 +1344,13 @@ async function saveProjectToBrowserStorage(project: ReviewProject): Promise<Brow
   }
 
   try {
+    if (estimatedBytes > MAX_LOCAL_STORAGE_BACKUP_BYTES || project.references.length >= LARGE_PROJECT_REFERENCE_COUNT) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.setItem(STORAGE_META_KEY, JSON.stringify(storageMeta(project, estimatedBytes, result.indexedDbSaved)));
+      return result;
+    }
+    const json = JSON.stringify(project);
+    result.bytes = new Blob([json]).size;
     localStorage.setItem(STORAGE_KEY, json);
     localStorage.setItem(STORAGE_META_KEY, JSON.stringify(storageMeta(project, result.bytes, result.indexedDbSaved)));
     result.localStorageSaved = true;
@@ -1346,6 +1368,19 @@ async function saveProjectToBrowserStorage(project: ReviewProject): Promise<Brow
   }
 
   return result;
+}
+
+function estimateProjectBytes(project: ReviewProject) {
+  let characters = 1200 + project.auditLog.length * 220;
+  for (const reference of project.references) {
+    characters += 900;
+    characters += reference.title.length + reference.abstract.length + reference.authors.length + reference.journal.length;
+    characters += reference.doi.length + reference.pmid.length + reference.database.length + reference.keywords.length + reference.notes.length;
+    characters += Object.keys(reference.decisions).length * 180;
+    characters += Object.values(reference.extraction).join("").length;
+    characters += reference.fullText.pdfPath.length + reference.fullText.reason.length + reference.fullText.note.length;
+  }
+  return characters * 2;
 }
 
 function storageMeta(project: ReviewProject, bytes: number, indexedDbSaved: boolean) {
@@ -1816,7 +1851,12 @@ function markDuplicates(references: ReferenceRecord[]): ReferenceRecord[] {
   for (const reference of references) {
     const keys = duplicateKeys(reference);
     for (const key of keys) {
-      groups.set(key, [...(groups.get(key) || []), reference.id]);
+      const group = groups.get(key);
+      if (group) {
+        group.push(reference.id);
+      } else {
+        groups.set(key, [reference.id]);
+      }
     }
   }
   const duplicateIds = new Map<string, string>();
@@ -1837,6 +1877,14 @@ function markDuplicates(references: ReferenceRecord[]): ReferenceRecord[] {
   });
 }
 
+function replaceReference(references: ReferenceRecord[], referenceId: string, updater: (reference: ReferenceRecord) => ReferenceRecord) {
+  const index = references.findIndex((reference) => reference.id === referenceId);
+  if (index < 0) return references;
+  const next = references.slice();
+  next[index] = updater(references[index]);
+  return next;
+}
+
 function duplicateKeys(reference: ReferenceRecord): string[] {
   const keys = [];
   if (reference.doi) keys.push(`doi:${reference.doi.toLowerCase().replace(/^https?:\/\/doi.org\//, "")}`);
@@ -1847,16 +1895,24 @@ function duplicateKeys(reference: ReferenceRecord): string[] {
 }
 
 function applyFilters(references: ReferenceRecord[], filters: FilterState, role: Role): ReferenceRecord[] {
-  return references.filter((reference) => {
-    const haystack = [reference.title, reference.abstract, reference.authors, reference.doi, reference.pmid, reference.keywords].join(" ").toLowerCase();
-    if (filters.query.trim() && !haystack.includes(filters.query.trim().toLowerCase())) return false;
-    if (filters.decision === "unscreened" && reference.decisions[role]) return false;
-    if (filters.decision !== "all" && filters.decision !== "unscreened" && reference.decisions[role]?.decision !== filters.decision) return false;
-    if (filters.duplicate === "possible" && reference.duplicateStatus !== "possible") return false;
-    if (filters.duplicate === "unique" && reference.duplicateStatus !== "unique") return false;
-    if (filters.duplicate === "resolved" && !reference.duplicateStatus.startsWith("resolved")) return false;
-    return reference.duplicateStatus !== "resolvedRemoved";
-  });
+  return references.filter((reference) => referenceMatchesFilters(reference, filters, role));
+}
+
+function referenceMatchesFilters(reference: ReferenceRecord, filters: FilterState, role: Role) {
+  const query = filters.query.trim().toLowerCase();
+  if (filters.decision === "unscreened" && reference.decisions[role]) return false;
+  if (filters.decision !== "all" && filters.decision !== "unscreened" && reference.decisions[role]?.decision !== filters.decision) return false;
+  if (filters.duplicate === "possible" && reference.duplicateStatus !== "possible") return false;
+  if (filters.duplicate === "unique" && reference.duplicateStatus !== "unique") return false;
+  if (filters.duplicate === "resolved" && !reference.duplicateStatus.startsWith("resolved")) return false;
+  if (reference.duplicateStatus === "resolvedRemoved") return false;
+  if (!query) return true;
+  return reference.title.toLowerCase().includes(query)
+    || reference.authors.toLowerCase().includes(query)
+    || reference.doi.toLowerCase().includes(query)
+    || reference.pmid.toLowerCase().includes(query)
+    || reference.keywords.toLowerCase().includes(query)
+    || reference.abstract.toLowerCase().includes(query);
 }
 
 function isConflict(reference: ReferenceRecord): boolean {
@@ -1873,21 +1929,57 @@ function finalDecision(reference: ReferenceRecord): Decision | "" {
   return a && b && a === b ? a : "";
 }
 
-function buildStats(project: ReviewProject) {
-  const total = project.references.length;
-  const duplicates = project.references.filter((reference) => reference.duplicateStatus === "possible" || reference.duplicateStatus.startsWith("resolved")).length;
-  const finalIncluded = project.references.filter((reference) => finalDecision(reference) === "include").length;
+function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
+  const byId = new Map<string, ReferenceRecord>();
+  const conflicts: ReferenceRecord[] = [];
+  const finalIncluded: ReferenceRecord[] = [];
+  const fullTextCandidates: ReferenceRecord[] = [];
+  let duplicates = 0;
+  let reviewerA = 0;
+  let reviewerB = 0;
+  let excluded = 0;
+  let maybe = 0;
+
+  for (const reference of references) {
+    byId.set(reference.id, reference);
+    if (reference.duplicateStatus === "possible" || reference.duplicateStatus.startsWith("resolved")) duplicates += 1;
+    if (reference.decisions.reviewerA) reviewerA += 1;
+    if (reference.decisions.reviewerB) reviewerB += 1;
+    if (isConflict(reference)) conflicts.push(reference);
+
+    const decision = finalDecision(reference);
+    if (decision === "include") {
+      finalIncluded.push(reference);
+      fullTextCandidates.push(reference);
+    } else if (decision === "maybe") {
+      maybe += 1;
+      fullTextCandidates.push(reference);
+    } else if (decision === "exclude") {
+      excluded += 1;
+    }
+  }
+
   return {
-    total,
-    duplicates,
-    reviewerA: project.references.filter((reference) => reference.decisions.reviewerA).length,
-    reviewerB: project.references.filter((reference) => reference.decisions.reviewerB).length,
-    conflicts: project.references.filter(isConflict).length,
+    byId,
+    conflicts,
     finalIncluded,
-    excluded: project.references.filter((reference) => finalDecision(reference) === "exclude").length,
-    maybe: project.references.filter((reference) => finalDecision(reference) === "maybe").length,
-    fullTextIncluded: project.references.filter((reference) => finalDecision(reference) === "include" || finalDecision(reference) === "maybe").length
+    fullTextCandidates,
+    stats: {
+      total: references.length,
+      duplicates,
+      reviewerA,
+      reviewerB,
+      conflicts: conflicts.length,
+      finalIncluded: finalIncluded.length,
+      excluded,
+      maybe,
+      fullTextIncluded: fullTextCandidates.length
+    }
   };
+}
+
+function buildStats(project: ReviewProject) {
+  return buildProjectIndex(project.references).stats;
 }
 
 function buildExportRows(project: ReviewProject) {
@@ -1916,7 +2008,7 @@ function buildExportRows(project: ReviewProject) {
   }));
 }
 
-function buildPrismaRows(stats: ReturnType<typeof buildStats>) {
+function buildPrismaRows(stats: ProjectStats) {
   return [
     { 指标: "数据库检索获得记录", 数量: stats.total },
     { 指标: "识别为重复记录", 数量: stats.duplicates },
@@ -1929,7 +2021,7 @@ function buildPrismaRows(stats: ReturnType<typeof buildStats>) {
   ];
 }
 
-function buildWordReport(project: ReviewProject, stats: ReturnType<typeof buildStats>) {
+function buildWordReport(project: ReviewProject, stats: ProjectStats) {
   const rows = buildPrismaRows(stats).map((row) => `<tr><td>${escapeHtml(row.指标)}</td><td>${row.数量}</td></tr>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(project.title)}</title></head><body>
     <h1>${escapeHtml(project.title)}</h1>
@@ -1963,7 +2055,7 @@ function formatBytes(bytes: number) {
 function logProject(project: ReviewProject, actor: Role, action: string, target: string, detail: string): ReviewProject {
   return {
     ...project,
-    auditLog: [createAudit(actor, action, target, detail), ...project.auditLog]
+    auditLog: [createAudit(actor, action, compactAuditText(target), compactAuditText(detail)), ...project.auditLog]
   };
 }
 
@@ -1984,6 +2076,11 @@ function clean(value: unknown) {
 
 function cleanBib(value: string) {
   return value.replace(/[{}]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function compactAuditText(value: string) {
+  const text = clean(value);
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
 function first(...values: Array<string[] | string | undefined>) {
@@ -2059,6 +2156,10 @@ function downloadText(content: string, fileName: string, type: string) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function yieldToBrowser() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 }
 
 function createId(prefix: string) {

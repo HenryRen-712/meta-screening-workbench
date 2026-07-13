@@ -799,12 +799,12 @@ textarea:focus {
 }
 
 .paperTitleScroll {
-  max-height: 118px;
-  overflow: auto;
+  overflow: visible;
   padding-right: 6px;
 }
 
 .paperTitleScroll h2 {
+  overflow-wrap: anywhere;
   line-height: 1.32;
   margin-bottom: 7px;
   white-space: normal;
@@ -874,6 +874,7 @@ textarea:focus {
 
 .abstractBox p {
   margin-bottom: 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -907,11 +908,13 @@ textarea:focus {
   font-size: 16px;
   line-height: 1.45;
   margin-bottom: 10px;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .readingBlock p {
   margin-bottom: 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 

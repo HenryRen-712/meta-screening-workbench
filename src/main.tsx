@@ -362,8 +362,8 @@ function App() {
   );
   const active = projectIndex.byId.get(activeId) || visibleReferences[0] || project.references[0] || null;
   const { conflicts, finalIncluded, fullTextCandidates, stats } = projectIndex;
-  const missingAbstractWithPmidCount = React.useMemo(
-    () => project.references.filter((reference) => !reference.abstract && normalizePmid(reference.pmid)).length,
+  const repairablePubMedCount = React.useMemo(
+    () => project.references.filter((reference) => needsPubMedRepair(reference)).length,
     [project.references]
   );
 
@@ -474,14 +474,14 @@ function App() {
 
     let importedForMerge = imported;
     let abstractEnrichmentDetail = "";
-    const missingImportedAbstracts = imported.filter((reference) => !reference.abstract && normalizePmid(reference.pmid)).length;
-    if (missingImportedAbstracts) {
-      setMessage(`已识别 ${imported.length} 条题录，正在尝试从 PubMed 补全 ${missingImportedAbstracts} 条缺失摘要。`);
+    const repairableImportedRecords = imported.filter((reference) => needsPubMedRepair(reference)).length;
+    if (repairableImportedRecords) {
+      setMessage(`已识别 ${imported.length} 条题录，正在尝试从 PubMed 补全 ${repairableImportedRecords} 条题名/摘要。`);
       const enrichment = await enrichMissingPubMedAbstracts(imported, (completed, total) => {
-        setMessage(`正在从 PubMed 补全摘要：${completed}/${total} 批。`);
+        setMessage(`正在从 PubMed 补全题名/摘要：${completed}/${total} 批。`);
       });
       importedForMerge = enrichment.references;
-      abstractEnrichmentDetail = enrichment.enriched ? `，PubMed 补全摘要 ${enrichment.enriched} 条` : "，未从 PubMed 补到新增摘要";
+      abstractEnrichmentDetail = enrichment.enriched ? `，PubMed 补全题名/摘要 ${enrichment.enriched} 条` : "，未从 PubMed 补到新增题名/摘要";
     }
 
     const merged = [...projectRef.current.references, ...importedForMerge];
@@ -504,37 +504,37 @@ function App() {
 
   async function enrichProjectAbstracts() {
     if (abstractEnrichmentRunning) return;
-    const targetCount = projectRef.current.references.filter((reference) => !reference.abstract && normalizePmid(reference.pmid)).length;
+    const targetCount = projectRef.current.references.filter((reference) => needsPubMedRepair(reference)).length;
     if (!targetCount) {
-      setMessage("当前项目没有可自动补全的摘要。需要题录中带有 PMID，才能从 PubMed 联网补全。");
+      setMessage("当前项目没有可自动补全的题名/摘要。需要题录中带有 PMID，才能从 PubMed 联网补全。");
       return;
     }
 
     setAbstractEnrichmentRunning(true);
-    setMessage(`正在从 PubMed 联网补全 ${targetCount} 条缺失摘要，请保持网络连接。`);
+    setMessage(`正在从 PubMed 联网补全 ${targetCount} 条题名/摘要，请保持网络连接。`);
     try {
       const baseProject = projectRef.current;
       const enrichment = await enrichMissingPubMedAbstracts(baseProject.references, (completed, total) => {
-        setMessage(`正在从 PubMed 补全摘要：${completed}/${total} 批。`);
+        setMessage(`正在从 PubMed 补全题名/摘要：${completed}/${total} 批。`);
       });
       if (!enrichment.enriched) {
-        setMessage("PubMed 没有返回可补全的新增摘要。可能是题录缺 PMID，或原始记录本身没有公开摘要。");
+        setMessage("PubMed 没有返回可补全的新增题名/摘要。可能是题录缺 PMID，或原始记录本身没有公开摘要。");
         return;
       }
       const nextProject = {
         ...logProject({
           ...projectRef.current,
           references: enrichment.references
-        }, role, "联网补全摘要", "PubMed", `补全 ${enrichment.enriched} 条缺失摘要`),
+        }, role, "联网补全题名/摘要", "PubMed", `补全 ${enrichment.enriched} 条题名/摘要`),
         updatedAt: nowIso()
       };
       projectRef.current = nextProject;
       setProject(nextProject);
-      setMessage(`已从 PubMed 补全 ${enrichment.enriched} 条摘要，正在自动保存。`);
+      setMessage(`已从 PubMed 补全 ${enrichment.enriched} 条题名/摘要，正在自动保存。`);
       await persistProjectNow(nextProject);
-      setMessage(`已从 PubMed 补全 ${enrichment.enriched} 条摘要，并已自动保存。`);
+      setMessage(`已从 PubMed 补全 ${enrichment.enriched} 条题名/摘要，并已自动保存。`);
     } catch {
-      setMessage("联网补全摘要失败。请检查网络，或确认题录中包含 PMID。");
+      setMessage("联网补全题名/摘要失败。请检查网络，或确认题录中包含 PMID。");
     } finally {
       setAbstractEnrichmentRunning(false);
     }
@@ -848,9 +848,9 @@ function App() {
                 <Check size={16} />
                 一键去重
               </button>
-              <button className="ghostButton" disabled={!missingAbstractWithPmidCount || abstractEnrichmentRunning} onClick={enrichProjectAbstracts} type="button">
+              <button className="ghostButton" disabled={!repairablePubMedCount || abstractEnrichmentRunning} onClick={enrichProjectAbstracts} type="button">
                 <Search size={16} />
-                {abstractEnrichmentRunning ? "补全中" : "补摘要"}
+                {abstractEnrichmentRunning ? "补全中" : "补题名/摘要"}
               </button>
               <button className="dangerGhostButton" disabled={!project.references.length} onClick={clearReferences} type="button">
                 <Trash2 size={16} />
@@ -2069,12 +2069,17 @@ type AbstractEnrichmentResult = {
   failed: number;
 };
 
+type PubMedMetadata = {
+  title: string;
+  abstract: string;
+};
+
 async function enrichMissingPubMedAbstracts(
   references: ReferenceRecord[],
   onProgress?: (completedBatches: number, totalBatches: number) => void
 ): Promise<AbstractEnrichmentResult> {
   const pmids = Array.from(new Set(references
-    .filter((reference) => !reference.abstract)
+    .filter((reference) => needsPubMedRepair(reference))
     .map((reference) => normalizePmid(reference.pmid))
     .filter(Boolean)));
   if (!pmids.length) return { references, enriched: 0, attempted: 0, failed: 0 };
@@ -2085,12 +2090,12 @@ async function enrichMissingPubMedAbstracts(
     batches.push(pmids.slice(index, index + batchSize));
   }
 
-  const abstractsByPmid = new Map<string, string>();
+  const metadataByPmid = new Map<string, PubMedMetadata>();
   let failed = 0;
   for (const [batchIndex, batch] of batches.entries()) {
     try {
-      const batchAbstracts = await fetchPubMedAbstractBatch(batch);
-      batchAbstracts.forEach((abstract, pmid) => abstractsByPmid.set(pmid, abstract));
+      const batchMetadata = await fetchPubMedMetadataBatch(batch);
+      batchMetadata.forEach((metadata, pmid) => metadataByPmid.set(pmid, metadata));
     } catch {
       failed += batch.length;
     }
@@ -2100,12 +2105,15 @@ async function enrichMissingPubMedAbstracts(
 
   let enriched = 0;
   const enrichedReferences = references.map((reference) => {
-    if (reference.abstract) return reference;
+    if (!needsPubMedRepair(reference)) return reference;
     const pmid = normalizePmid(reference.pmid);
-    const abstract = pmid ? abstractsByPmid.get(pmid) : "";
-    if (!abstract) return reference;
+    const metadata = pmid ? metadataByPmid.get(pmid) : undefined;
+    if (!metadata) return reference;
+    const nextTitle = shouldReplaceWithPubMed(reference.title, metadata.title) ? metadata.title : reference.title;
+    const nextAbstract = shouldReplaceWithPubMed(reference.abstract, metadata.abstract) ? metadata.abstract : reference.abstract;
+    if (nextTitle === reference.title && nextAbstract === reference.abstract) return reference;
     enriched += 1;
-    return { ...reference, abstract };
+    return { ...reference, title: nextTitle, abstract: nextAbstract };
   });
 
   return {
@@ -2116,7 +2124,7 @@ async function enrichMissingPubMedAbstracts(
   };
 }
 
-async function fetchPubMedAbstractBatch(pmids: string[]): Promise<Map<string, string>> {
+async function fetchPubMedMetadataBatch(pmids: string[]): Promise<Map<string, PubMedMetadata>> {
   const url = new URL("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi");
   url.searchParams.set("db", "pubmed");
   url.searchParams.set("id", pmids.join(","));
@@ -2129,11 +2137,12 @@ async function fetchPubMedAbstractBatch(pmids: string[]): Promise<Map<string, st
   const xmlText = await response.text();
   const document = new DOMParser().parseFromString(xmlText, "application/xml");
   const articles = Array.from(document.getElementsByTagName("PubmedArticle"));
-  const abstracts = new Map<string, string>();
+  const metadataByPmid = new Map<string, PubMedMetadata>();
 
   for (const article of articles) {
     const pmid = article.getElementsByTagName("PMID")[0]?.textContent?.trim() || "";
     if (!pmid) continue;
+    const title = clean(article.getElementsByTagName("ArticleTitle")[0]?.textContent || "");
     const abstractTexts = Array.from(article.getElementsByTagName("AbstractText"))
       .map((node) => {
         const label = node.getAttribute("Label") || node.getAttribute("NlmCategory") || "";
@@ -2143,10 +2152,10 @@ async function fetchPubMedAbstractBatch(pmids: string[]): Promise<Map<string, st
       })
       .filter(Boolean);
     const abstract = clean(abstractTexts.join(" "));
-    if (abstract) abstracts.set(pmid, abstract);
+    if (title || abstract) metadataByPmid.set(pmid, { title, abstract });
   }
 
-  return abstracts;
+  return metadataByPmid;
 }
 
 function isHeaderRow(row: string[]): boolean {
@@ -2509,6 +2518,28 @@ function normalizeHeader(value: string) {
 
 function normalizePmid(value: string) {
   return clean(value).match(/\d{5,9}/)?.[0] || "";
+}
+
+function needsPubMedRepair(reference: ReferenceRecord) {
+  if (!normalizePmid(reference.pmid)) return false;
+  return shouldRepairText(reference.title) || shouldRepairText(reference.abstract);
+}
+
+function shouldRepairText(value: string) {
+  const text = clean(value);
+  return !text || hasEllipsis(text);
+}
+
+function shouldReplaceWithPubMed(currentValue: string, pubMedValue: string) {
+  const current = clean(currentValue);
+  const next = clean(pubMedValue);
+  if (!next) return false;
+  if (!current) return true;
+  return hasEllipsis(current) && next.length >= current.replace(/\.{3,}|…/g, "").length;
+}
+
+function hasEllipsis(value: string) {
+  return /\.{3,}|…/.test(value);
 }
 
 function normalizeTitle(value: string) {

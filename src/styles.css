@@ -1,6 +1,25 @@
 :root {
-  color: #24313d;
-  background: #f3efe8;
+  color: #10233f;
+  background: #edf6ff;
+  --bg: #edf6ff;
+  --surface: #fbfdff;
+  --surface-strong: #ffffff;
+  --surface-soft: #f3f8ff;
+  --line: #d4e4f3;
+  --line-strong: #adc7df;
+  --text: #10233f;
+  --muted: #60758d;
+  --blue: #0a66c2;
+  --blue-strong: #074f9b;
+  --blue-soft: #e6f2ff;
+  --cyan: #0f93b8;
+  --green: #147a55;
+  --green-soft: #e6f6ef;
+  --amber: #996515;
+  --amber-soft: #fff4d8;
+  --red: #b33a35;
+  --red-soft: #fde9e7;
+  --shadow: 0 18px 48px rgba(20, 73, 118, 0.11);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -13,6 +32,8 @@
 }
 
 body {
+  background:
+    linear-gradient(180deg, #e7f3ff 0%, #f7fbff 42%, #eef6ff 100%);
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
@@ -31,20 +52,25 @@ button {
 
 .appShell {
   min-height: 100vh;
-  padding: 18px;
+  padding: 20px;
 }
 
 .topBar {
   align-items: center;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
   display: flex;
   gap: 18px;
   justify-content: space-between;
   margin: 0 auto 14px;
   max-width: 1720px;
+  padding: 18px;
 }
 
 .eyebrow {
-  color: #6d7f8d;
+  color: var(--blue);
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0;
@@ -60,7 +86,7 @@ p {
 }
 
 h1 {
-  color: #24313d;
+  color: var(--text);
   font-size: 30px;
   line-height: 1.15;
   margin-bottom: 6px;
@@ -90,7 +116,7 @@ h3 {
 .auditItem p,
 .auditItem span,
 .extractionTable td span {
-  color: #687b89;
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
 }
@@ -130,16 +156,18 @@ h3 {
 }
 
 .topActions {
+  align-items: stretch;
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, 150px);
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
   justify-content: end;
+  width: min(100%, 510px);
 }
 
 .workspace {
   display: grid;
   gap: 14px;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: 338px minmax(0, 1fr);
   margin: 0 auto;
   max-width: 1720px;
 }
@@ -165,10 +193,10 @@ h3 {
 .statusStrip,
 .listPane,
 .detailPane {
-  background: #fffdf8;
-  border: 1px solid #d8e0e5;
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  box-shadow: 0 12px 34px rgba(55, 72, 87, 0.08);
+  box-shadow: var(--shadow);
 }
 
 .panelBlock {
@@ -176,7 +204,7 @@ h3 {
 }
 
 .panelTitle {
-  color: #2d3e4c;
+  color: var(--text);
   font-size: 14px;
   font-weight: 850;
   gap: 7px;
@@ -198,10 +226,10 @@ h3 {
 }
 
 .importTitle b {
-  background: #edf3f5;
-  border: 1px solid #cfdae0;
+  background: var(--blue-soft);
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
-  color: #53768a;
+  color: var(--blue-strong);
   font-size: 12px;
   min-width: 48px;
   padding: 4px 8px;
@@ -209,7 +237,7 @@ h3 {
 }
 
 label {
-  color: #435665;
+  color: #31506e;
   display: grid;
   font-size: 12px;
   font-weight: 800;
@@ -220,10 +248,10 @@ label {
 input,
 select,
 textarea {
-  background: #fbfaf6;
-  border: 1px solid #cbd8df;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  color: #24313d;
+  color: var(--text);
   min-width: 0;
   outline: none;
   padding: 10px;
@@ -239,8 +267,8 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: #54788c;
-  box-shadow: 0 0 0 3px rgba(84, 120, 140, 0.16);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(10, 102, 194, 0.16);
 }
 
 .personGrid {
@@ -250,8 +278,8 @@ textarea:focus {
 }
 
 .segmented {
-  background: #eef2f4;
-  border: 1px solid #d3dde4;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   display: grid;
   gap: 4px;
@@ -262,7 +290,7 @@ textarea:focus {
 .segmented button {
   background: transparent;
   border-radius: 6px;
-  color: #506371;
+  color: #42617f;
   cursor: pointer;
   font-size: 12px;
   font-weight: 850;
@@ -270,15 +298,53 @@ textarea:focus {
 }
 
 .segmented button.active {
-  background: #53768a;
-  color: #fffdf8;
+  background: var(--blue);
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(10, 102, 194, 0.18);
+}
+
+.versionBanner {
+  background: #f7fbff;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--cyan);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(20, 73, 118, 0.08);
+  display: grid;
+  gap: 7px;
+  padding: 13px;
+}
+
+.versionBanner strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.versionBanner p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.versionBadge {
+  background: var(--blue-soft);
+  border: 1px solid #bdd8f3;
+  border-radius: 999px;
+  color: var(--blue-strong);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  padding: 4px 8px;
+  text-transform: uppercase;
+  width: fit-content;
 }
 
 .dropZone {
   align-items: center;
-  border: 1px dashed #8aa1af;
+  background: #f6fbff;
+  border: 1px dashed #7eb2de;
   border-radius: 8px;
-  color: #3c5363;
+  color: #234d73;
   cursor: pointer;
   display: flex;
   gap: 8px;
@@ -295,12 +361,12 @@ textarea:focus {
 }
 
 .dropZone strong {
-  color: #2d3e4c;
+  color: var(--text);
   font-size: 14px;
 }
 
 .dropZone small {
-  color: #718491;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 750;
 }
@@ -313,7 +379,7 @@ textarea:focus {
 .stageButton:hover,
 .referenceItem:hover,
 .exportCard:hover {
-  background: #eef4f6;
+  background: var(--blue-soft);
 }
 
 .dropZone input,
@@ -331,7 +397,7 @@ textarea:focus {
 .importActions {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .primaryButton,
@@ -354,6 +420,8 @@ textarea:focus {
 .topActions .ghostButton,
 .topActions .fileAction {
   height: 48px;
+  line-height: 1;
+  margin: 0;
   min-height: 48px;
   padding: 0 14px;
   width: 100%;
@@ -364,27 +432,28 @@ textarea:focus {
 }
 
 .primaryButton {
-  background: #466f85;
-  color: #fffdf8;
+  background: linear-gradient(180deg, #0b74d9 0%, var(--blue) 100%);
+  box-shadow: 0 10px 22px rgba(10, 102, 194, 0.18);
+  color: #ffffff;
 }
 
 .secondaryButton {
-  background: #2d3e4c;
-  color: #fffdf8;
+  background: #123a5e;
+  color: #ffffff;
 }
 
 .ghostButton,
 .fileAction,
 .smallButton {
-  background: #fffdf8;
-  border: 1px solid #cbd8df;
-  color: #2d3e4c;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  color: #15395d;
 }
 
 .dangerGhostButton {
-  background: #fffdf8;
-  border: 1px solid #e1c8c3;
-  color: #9d3934;
+  background: var(--surface-strong);
+  border: 1px solid #efc8c5;
+  color: var(--red);
 }
 
 .smallButton {
@@ -422,10 +491,10 @@ textarea:focus {
 
 .chip,
 .fieldChip {
-  background: #edf3f5;
-  border: 1px solid #cfdae0;
+  background: var(--blue-soft);
+  border: 1px solid #c4dbef;
   border-radius: 999px;
-  color: #364b5b;
+  color: #15395d;
   font-size: 12px;
   font-weight: 800;
   gap: 6px;
@@ -455,10 +524,10 @@ textarea:focus {
 }
 
 .stageButton {
-  background: #fffdf8;
-  border: 1px solid #d8e0e5;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  color: #324656;
+  color: #183b5c;
   cursor: pointer;
   font-weight: 850;
   justify-content: space-between;
@@ -472,9 +541,9 @@ textarea:focus {
 }
 
 .stageButton b {
-  background: #e8eef1;
+  background: var(--surface-soft);
   border-radius: 999px;
-  color: #53768a;
+  color: var(--blue-strong);
   font-size: 12px;
   min-width: 28px;
   padding: 3px 8px;
@@ -482,17 +551,19 @@ textarea:focus {
 }
 
 .stageButton.active {
-  background: #466f85;
-  border-color: #466f85;
-  color: #fffdf8;
+  background: #0a66c2;
+  border-color: #0a66c2;
+  box-shadow: 0 12px 24px rgba(10, 102, 194, 0.18);
+  color: #ffffff;
 }
 
 .stageButton.active b {
-  background: rgba(255, 253, 248, 0.2);
-  color: #fffdf8;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
 }
 
 .statusStrip {
+  background: #ffffff;
   display: grid;
   gap: 14px;
   grid-template-columns: minmax(240px, 1fr) auto auto;
@@ -511,17 +582,17 @@ textarea:focus {
 }
 
 .statusPill.blind {
-  background: #fff1d8;
-  color: #875b14;
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .statusPill.revealed {
-  background: #e5f2ea;
-  color: #2e7047;
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .storageStatus {
-  color: #547082;
+  color: #315f8e;
   font-weight: 750;
   margin-top: 4px;
 }
@@ -531,8 +602,8 @@ textarea:focus {
 }
 
 .metric {
-  background: #f6f5ef;
-  border: 1px solid #dce2e5;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   min-width: 70px;
   padding: 9px;
@@ -540,13 +611,13 @@ textarea:focus {
 }
 
 .metric strong {
-  color: #24313d;
+  color: var(--blue-strong);
   display: block;
   font-size: 19px;
 }
 
 .metric span {
-  color: #697b87;
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -565,7 +636,8 @@ textarea:focus {
 }
 
 .toolbar {
-  border-bottom: 1px solid #dde4e8;
+  background: #f7fbff;
+  border-bottom: 1px solid var(--line);
   display: grid;
   gap: 8px;
   grid-template-columns: 1fr 135px 135px;
@@ -574,8 +646,8 @@ textarea:focus {
 
 .searchBox {
   align-items: center;
-  background: #fbfaf6;
-  border: 1px solid #cbd8df;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
   display: flex;
   gap: 8px;
@@ -590,9 +662,9 @@ textarea:focus {
 
 .paginationBar {
   align-items: center;
-  background: #f4f7f7;
-  border-bottom: 1px solid #dde4e8;
-  color: #5f7280;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
   display: flex;
   font-size: 12px;
   font-weight: 850;
@@ -603,7 +675,7 @@ textarea:focus {
 }
 
 .contentBlock > .paginationBar {
-  border: 1px solid #dde4e8;
+  border: 1px solid var(--line);
   border-radius: 8px;
   margin-bottom: 12px;
 }
@@ -616,10 +688,10 @@ textarea:focus {
 
 .paginationControls button {
   align-items: center;
-  background: #fffdf8;
-  border: 1px solid #cad6dd;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  color: #3d596a;
+  color: #1b4a76;
   cursor: pointer;
   display: inline-flex;
   height: 30px;
@@ -633,7 +705,7 @@ textarea:focus {
 }
 
 .paginationControls strong {
-  color: #314553;
+  color: var(--text);
   min-width: 54px;
   text-align: center;
 }
@@ -647,8 +719,8 @@ textarea:focus {
 }
 
 .referenceItem {
-  background: #fbfaf6;
-  border: 1px solid #dce4e8;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
   border-radius: 8px;
   cursor: pointer;
   display: grid;
@@ -659,12 +731,13 @@ textarea:focus {
 }
 
 .referenceItem.active {
-  background: #edf4f6;
-  border-color: #7f9aaa;
+  background: #eef7ff;
+  border-color: #6aa8dd;
+  box-shadow: inset 3px 0 0 var(--blue);
 }
 
 .referenceTitle {
-  color: #24313d;
+  color: var(--text);
   display: -webkit-box;
   font-size: 13px;
   font-weight: 850;
@@ -692,25 +765,25 @@ textarea:focus {
 }
 
 .miniBadge.include {
-  background: #e5f2ea;
-  color: #2e7047;
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .miniBadge.maybe {
-  background: #fff1d8;
-  color: #875b14;
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .miniBadge.exclude,
 .miniBadge.warning {
-  background: #f9e5e1;
-  color: #9d3934;
+  background: var(--red-soft);
+  color: var(--red);
 }
 
 .miniBadge.empty,
 .countBadge {
-  background: #e8eef1;
-  color: #526879;
+  background: var(--blue-soft);
+  color: #315f8e;
 }
 
 .detailPane {
@@ -719,14 +792,22 @@ textarea:focus {
 
 .paperHeader {
   align-items: flex-start;
-  border-bottom: 1px solid #dde4e8;
+  border-bottom: 1px solid var(--line);
   gap: 12px;
   justify-content: space-between;
   padding-bottom: 14px;
 }
 
-.paperHeader h2 {
+.paperTitleScroll {
+  max-height: 118px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.paperTitleScroll h2 {
+  line-height: 1.32;
   margin-bottom: 7px;
+  white-space: normal;
 }
 
 .paperHeaderActions {
@@ -737,27 +818,56 @@ textarea:focus {
 
 .duplicatePill.unique,
 .duplicatePill.resolvedKept {
-  background: #e5f2ea;
-  color: #2e7047;
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .duplicatePill.possible {
-  background: #fff1d8;
-  color: #875b14;
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .duplicatePill.resolvedRemoved {
-  background: #f9e5e1;
-  color: #9d3934;
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.readingModeTabs {
+  background: #edf6ff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px;
+  padding: 4px;
+}
+
+.readingModeTabs button {
+  background: transparent;
+  border-radius: 6px;
+  color: #49627c;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+.readingModeTabs button.active {
+  background: var(--surface-strong);
+  box-shadow: 0 7px 18px rgba(10, 102, 194, 0.12);
+  color: var(--blue-strong);
 }
 
 .abstractBox {
-  background: #f8f7f1;
-  border: 1px solid #dce3e6;
+  background: #f7fbff;
+  border: 1px solid var(--line);
   border-radius: 8px;
   line-height: 1.65;
   margin-top: 14px;
-  max-height: 280px;
+  max-height: min(46vh, 520px);
+  min-height: 220px;
   overflow: auto;
   padding: 14px;
 }
@@ -765,6 +875,71 @@ textarea:focus {
 .abstractBox p {
   margin-bottom: 0;
   white-space: pre-wrap;
+}
+
+.bilingualStack {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.readingBlock {
+  background: #f7fbff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  line-height: 1.65;
+  max-height: min(34vh, 360px);
+  min-height: 150px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.readingBlock span {
+  color: var(--blue);
+  display: block;
+  font-size: 12px;
+  font-weight: 900;
+  margin-bottom: 8px;
+}
+
+.readingBlock h3 {
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.45;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+}
+
+.readingBlock p {
+  margin-bottom: 0;
+  white-space: pre-wrap;
+}
+
+.readingBlock.translated {
+  background: #fbfdff;
+  border-color: #b9d9f5;
+}
+
+.translationEditor {
+  background: #f7fbff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+}
+
+.translationEditor label {
+  margin-top: 0;
+}
+
+.translationEditor textarea {
+  min-height: 92px;
+}
+
+.translationEditor .abstractTranslationInput {
+  min-height: 220px;
 }
 
 .metadataGrid {
@@ -775,15 +950,15 @@ textarea:focus {
 }
 
 .metaItem {
-  background: #fbfaf6;
-  border: 1px solid #dde4e8;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
   border-radius: 8px;
   min-height: 74px;
   padding: 10px;
 }
 
 .metaItem span {
-  color: #687b89;
+  color: var(--muted);
   display: block;
   font-size: 12px;
   font-weight: 850;
@@ -791,7 +966,7 @@ textarea:focus {
 }
 
 .metaItem strong {
-  color: #2d3e4c;
+  color: var(--text);
   display: block;
   font-size: 13px;
   line-height: 1.35;
@@ -800,8 +975,8 @@ textarea:focus {
 
 .decisionPanel {
   align-items: center;
-  background: #edf3f5;
-  border: 1px solid #d1dce2;
+  background: #eef7ff;
+  border: 1px solid #bdd8f3;
   border-radius: 8px;
   display: flex;
   gap: 14px;
@@ -835,7 +1010,7 @@ textarea:focus {
 
 .includeButton {
   align-items: center;
-  background: #2f7a50;
+  background: var(--green);
   color: white;
   display: flex;
   gap: 7px;
@@ -843,15 +1018,15 @@ textarea:focus {
 
 .maybeButton {
   align-items: center;
-  background: #8a641c;
+  background: var(--amber);
   color: white;
   display: flex;
   gap: 7px;
 }
 
 .excludeSelect {
-  background: #9d3934;
-  border-color: #9d3934;
+  background: var(--red);
+  border-color: var(--red);
   color: white;
   width: auto;
 }
@@ -863,14 +1038,14 @@ textarea:focus {
 
 .centeredBlock {
   align-content: center;
-  color: #607380;
+  color: var(--muted);
   display: grid;
   justify-items: center;
   text-align: center;
 }
 
 .sectionHeader {
-  border-bottom: 1px solid #dde4e8;
+  border-bottom: 1px solid var(--line);
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
@@ -887,8 +1062,8 @@ textarea:focus {
 .conflictCard,
 .fullTextCard,
 .auditItem {
-  background: #fbfaf6;
-  border: 1px solid #dce4e8;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
 }
@@ -901,14 +1076,14 @@ textarea:focus {
 }
 
 .voteCard {
-  background: #f4f6f5;
-  border: 1px solid #dce4e8;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
 }
 
 .voteCard span {
-  color: #687b89;
+  color: var(--muted);
   display: block;
   font-size: 12px;
   font-weight: 850;
@@ -946,7 +1121,7 @@ textarea:focus {
 
 .extractionTable th,
 .extractionTable td {
-  border-bottom: 1px solid #dfe6e9;
+  border-bottom: 1px solid var(--line);
   font-size: 13px;
   padding: 10px;
   text-align: left;
@@ -954,8 +1129,8 @@ textarea:focus {
 }
 
 .extractionTable th {
-  background: #edf3f5;
-  color: #324656;
+  background: #eaf5ff;
+  color: #173a5c;
   font-size: 12px;
   position: sticky;
   top: 0;
@@ -963,7 +1138,7 @@ textarea:focus {
 
 .extractionTable th:first-child,
 .extractionTable td:first-child {
-  background: #fbfaf6;
+  background: #f8fbff;
   left: 0;
   min-width: 260px;
   position: sticky;
@@ -988,10 +1163,10 @@ textarea:focus {
 }
 
 .exportCard {
-  background: #fbfaf6;
-  border: 1px solid #dce4e8;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  color: #2d3e4c;
+  color: var(--text);
   cursor: pointer;
   display: grid;
   gap: 8px;
@@ -1010,12 +1185,12 @@ textarea:focus {
 }
 
 .auditItem strong {
-  color: #2d3e4c;
+  color: var(--text);
 }
 
 .blankState {
   align-items: center;
-  color: #728491;
+  color: var(--muted);
   display: flex;
   flex-direction: column;
   gap: 10px;

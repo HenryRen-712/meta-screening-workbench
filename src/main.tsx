@@ -70,7 +70,14 @@ type ReferenceRecord = {
   adjudication?: ScreeningDecision;
   fullText: FullTextReview;
   extraction: Record<string, string>;
+  translation?: ReferenceTranslation;
   notes: string;
+};
+
+type ReferenceTranslation = {
+  titleZh?: string;
+  abstractZh?: string;
+  updatedAt?: string;
 };
 
 type ScreeningDecision = {
@@ -204,8 +211,19 @@ const knownHeaderNames = new Set([
   "摘要",
   "文摘",
   "abstract",
+  "abstracts",
+  "abstractnote",
+  "articleabstract",
+  "englishabstract",
+  "summary",
+  "description",
+  "ab",
+  "n2",
   "关键词",
   "keywords",
+  "keyword",
+  "authorkeywords",
+  "keywordsplus",
   "doi",
   "pmid",
   "pubmedid",
@@ -233,6 +251,25 @@ const knownHeaderNames = new Set([
   "publicationdate"
 ]);
 
+const abstractFieldNames = [
+  "摘要",
+  "文摘",
+  "文　摘",
+  "abstract",
+  "abstracts",
+  "abstract note",
+  "abstract_note",
+  "abstract-note",
+  "article abstract",
+  "english abstract",
+  "summary",
+  "description",
+  "description abstract",
+  "record abstract",
+  "AB",
+  "N2"
+];
+
 type ProjectIndex = {
   byId: Map<string, ReferenceRecord>;
   conflicts: ReferenceRecord[];
@@ -243,6 +280,7 @@ type ProjectIndex = {
 
 function App() {
   const [project, setProject] = React.useState<ReviewProject>(readProject);
+  const projectRef = React.useRef(project);
   const [role, setRole] = React.useState<Role>("reviewerA");
   const [stage, setStage] = React.useState<Stage>("titleAbstract");
   const [activeId, setActiveId] = React.useState<string>(() => project.references[0]?.id || "");
@@ -250,16 +288,24 @@ function App() {
   const [message, setMessage] = React.useState("项目已保存在本机浏览器，可随时导出备份。");
   const [storageReady, setStorageReady] = React.useState(false);
   const [storageStatus, setStorageStatus] = React.useState("正在检查本机保存状态");
+  const [abstractEnrichmentRunning, setAbstractEnrichmentRunning] = React.useState(false);
   const deferredFilters = React.useDeferredValue(filters);
+
+  React.useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   React.useEffect(() => {
     let cancelled = false;
     readProjectFromIndexedDb()
       .then((stored) => {
         if (cancelled) return;
-        if (stored && shouldUseStoredProject(stored, project)) {
-          setProject(stored);
-          setActiveId(stored.references[0]?.id || "");
+        const localProject = readProjectFromLocalStorage();
+        const projectToRestore = chooseStartupProject(stored, localProject);
+        if (projectToRestore) {
+          projectRef.current = projectToRestore;
+          setProject(projectToRestore);
+          setActiveId(projectToRestore.references[0]?.id || "");
           setMessage("已从本机数据库恢复最近保存的项目。");
         }
         setStorageReady(true);
@@ -278,22 +324,36 @@ function App() {
   React.useEffect(() => {
     if (!storageReady) return;
     const timer = window.setTimeout(() => {
-      saveProjectToBrowserStorage(project)
-        .then((result) => {
-          if (result.indexedDbSaved) {
-            setStorageStatus(`已自动保存：${formatBytes(result.bytes)}`);
-          } else if (result.localStorageSaved) {
-            setStorageStatus(`已保存到浏览器临时存储：${formatBytes(result.bytes)}`);
-          } else {
-            setStorageStatus(`已保存到本机数据库，浏览器临时存储仅保留索引：${formatBytes(result.bytes)}`);
-          }
-        })
+      persistProjectNow(project)
         .catch(() => {
           setStorageStatus("自动保存失败，请立即导出项目备份");
         });
     }, AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [project, storageReady]);
+
+  React.useEffect(() => {
+    function persistLatestProject() {
+      void saveProjectToBrowserStorage(projectRef.current);
+    }
+
+    function persistWhenHidden() {
+      if (document.visibilityState === "hidden") persistLatestProject();
+    }
+
+    window.addEventListener("pagehide", persistLatestProject);
+    document.addEventListener("visibilitychange", persistWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", persistLatestProject);
+      document.removeEventListener("visibilitychange", persistWhenHidden);
+    };
+  }, []);
+
+  async function persistProjectNow(projectToSave: ReviewProject) {
+    const result = await saveProjectToBrowserStorage(projectToSave);
+    setStorageStatus(saveResultMessage(result));
+    return result;
+  }
 
   const projectIndex = React.useMemo(() => buildProjectIndex(project.references), [project.references]);
   const visibleReferences = React.useMemo(
@@ -302,6 +362,10 @@ function App() {
   );
   const active = projectIndex.byId.get(activeId) || visibleReferences[0] || project.references[0] || null;
   const { conflicts, finalIncluded, fullTextCandidates, stats } = projectIndex;
+  const missingAbstractWithPmidCount = React.useMemo(
+    () => project.references.filter((reference) => !reference.abstract && normalizePmid(reference.pmid)).length,
+    [project.references]
+  );
 
   React.useEffect(() => {
     const activeReference = projectIndex.byId.get(activeId);
@@ -311,7 +375,11 @@ function App() {
   }, [activeId, deferredFilters, projectIndex.byId, role, visibleReferences]);
 
   function updateProject(updater: (current: ReviewProject) => ReviewProject) {
-    setProject((current) => ({ ...updater(current), updatedAt: nowIso() }));
+    setProject((current) => {
+      const nextProject = { ...updater(current), updatedAt: nowIso() };
+      projectRef.current = nextProject;
+      return nextProject;
+    });
   }
 
   function updateReference(referenceId: string, updater: (reference: ReferenceRecord) => ReferenceRecord, actor: Role, action: string, detail: string) {
@@ -325,14 +393,30 @@ function App() {
     });
   }
 
+  function updateReferenceTranslation(referenceId: string, patch: Partial<ReferenceTranslation>) {
+    updateProject((current) => ({
+      ...current,
+      references: replaceReference(current.references, referenceId, (reference) => ({
+        ...reference,
+        translation: {
+          ...reference.translation,
+          ...patch,
+          updatedAt: nowIso()
+        }
+      }))
+    }));
+  }
+
   function createNewProject() {
     const confirmed = window.confirm("创建新项目会替换当前本机项目。请先导出备份后再继续。确定创建吗？");
     if (!confirmed) return;
     const next = createSeedProject(false);
+    projectRef.current = next;
     setProject(next);
     setActiveId("");
     setStage("titleAbstract");
     setMessage("已创建空白项目。");
+    void persistProjectNow(next);
   }
 
   function updateProjectInfo(key: keyof Pick<ReviewProject, "title" | "question" | "searchDate" | "reviewerA" | "reviewerB" | "adjudicator">, value: string) {
@@ -388,16 +472,72 @@ function App() {
     setMessage(`已识别 ${imported.length} 条题录，正在合并并重算重复记录。`);
     await yieldToBrowser();
 
-    updateProject((current) => {
-      const merged = [...current.references, ...imported];
-      const withDuplicates = markDuplicates(merged);
-      return logProject({
-        ...current,
+    let importedForMerge = imported;
+    let abstractEnrichmentDetail = "";
+    const missingImportedAbstracts = imported.filter((reference) => !reference.abstract && normalizePmid(reference.pmid)).length;
+    if (missingImportedAbstracts) {
+      setMessage(`已识别 ${imported.length} 条题录，正在尝试从 PubMed 补全 ${missingImportedAbstracts} 条缺失摘要。`);
+      const enrichment = await enrichMissingPubMedAbstracts(imported, (completed, total) => {
+        setMessage(`正在从 PubMed 补全摘要：${completed}/${total} 批。`);
+      });
+      importedForMerge = enrichment.references;
+      abstractEnrichmentDetail = enrichment.enriched ? `，PubMed 补全摘要 ${enrichment.enriched} 条` : "，未从 PubMed 补到新增摘要";
+    }
+
+    const merged = [...projectRef.current.references, ...importedForMerge];
+    const withDuplicates = markDuplicates(merged);
+    const nextProject = {
+      ...logProject({
+        ...projectRef.current,
         references: withDuplicates
-      }, role, "导入题录", "题录库", `新增 ${imported.length} 条题录`);
-    });
-    setActiveId(imported[0].id);
-    setMessage(`已导入 ${imported.length} 条题录${errors.length ? `，${errors.length} 个文件有异常` : ""}。`);
+      }, role, "导入题录", "题录库", `新增 ${imported.length} 条题录`),
+      updatedAt: nowIso()
+    };
+    projectRef.current = nextProject;
+    setProject(nextProject);
+    setActiveId(importedForMerge[0].id);
+    setMessage(`已导入 ${imported.length} 条题录${abstractEnrichmentDetail}${errors.length ? `，${errors.length} 个文件有异常` : ""}。`);
+    persistProjectNow(nextProject)
+      .then(() => setMessage(`已导入 ${imported.length} 条题录${abstractEnrichmentDetail}，并已立即自动保存。${errors.length ? ` ${errors.length} 个文件有异常` : ""}`))
+      .catch(() => setStorageStatus("导入后立即保存失败，请立即点击项目备份"));
+  }
+
+  async function enrichProjectAbstracts() {
+    if (abstractEnrichmentRunning) return;
+    const targetCount = projectRef.current.references.filter((reference) => !reference.abstract && normalizePmid(reference.pmid)).length;
+    if (!targetCount) {
+      setMessage("当前项目没有可自动补全的摘要。需要题录中带有 PMID，才能从 PubMed 联网补全。");
+      return;
+    }
+
+    setAbstractEnrichmentRunning(true);
+    setMessage(`正在从 PubMed 联网补全 ${targetCount} 条缺失摘要，请保持网络连接。`);
+    try {
+      const baseProject = projectRef.current;
+      const enrichment = await enrichMissingPubMedAbstracts(baseProject.references, (completed, total) => {
+        setMessage(`正在从 PubMed 补全摘要：${completed}/${total} 批。`);
+      });
+      if (!enrichment.enriched) {
+        setMessage("PubMed 没有返回可补全的新增摘要。可能是题录缺 PMID，或原始记录本身没有公开摘要。");
+        return;
+      }
+      const nextProject = {
+        ...logProject({
+          ...projectRef.current,
+          references: enrichment.references
+        }, role, "联网补全摘要", "PubMed", `补全 ${enrichment.enriched} 条缺失摘要`),
+        updatedAt: nowIso()
+      };
+      projectRef.current = nextProject;
+      setProject(nextProject);
+      setMessage(`已从 PubMed 补全 ${enrichment.enriched} 条摘要，正在自动保存。`);
+      await persistProjectNow(nextProject);
+      setMessage(`已从 PubMed 补全 ${enrichment.enriched} 条摘要，并已自动保存。`);
+    } catch {
+      setMessage("联网补全摘要失败。请检查网络，或确认题录中包含 PMID。");
+    } finally {
+      setAbstractEnrichmentRunning(false);
+    }
   }
 
   function downloadTemplate() {
@@ -421,6 +561,30 @@ function App() {
     setActiveId("");
     setStage("titleAbstract");
     setMessage("已清空题录库。可以导入新的主题文献。");
+  }
+
+  function recomputeDuplicates() {
+    updateProject((current) => logProject({
+      ...current,
+      references: markDuplicates(current.references)
+    }, role, "重算去重", "题录库", "已重新识别 DOI、PMID 和题名重复记录"));
+    setMessage("已重新识别疑似重复记录。");
+  }
+
+  function autoDeduplicateReferences() {
+    if (!project.references.length) return;
+    const deduped = autoResolveDuplicates(project.references);
+    if (!deduped.removed) {
+      setMessage("未发现可一键处理的重复记录。");
+      return;
+    }
+    const confirmed = window.confirm(`已识别 ${deduped.groups} 组重复记录，将自动保留信息最完整的一条，并把 ${deduped.removed} 条标记为“重复移除”。不会物理删除原始记录。确定继续吗？`);
+    if (!confirmed) return;
+    updateProject((current) => logProject({
+      ...current,
+      references: deduped.references
+    }, role, "一键去重", "题录库", `保留 ${deduped.kept} 条，标记移除 ${deduped.removed} 条`));
+    setMessage(`一键去重完成：保留 ${deduped.kept} 条，标记移除 ${deduped.removed} 条重复记录。`);
   }
 
   function setScreeningDecision(referenceId: string, decision: Decision, reason = "", note = "") {
@@ -539,9 +703,11 @@ function App() {
     file.text().then((text) => {
       const parsed = JSON.parse(text) as ReviewProject;
       if (!parsed.references || !parsed.auditLog) throw new Error("不是有效项目备份。");
+      projectRef.current = parsed;
       setProject(parsed);
       setActiveId(parsed.references[0]?.id || "");
       setMessage("已恢复项目备份。");
+      void persistProjectNow(parsed);
     }).catch((error) => setMessage(error instanceof Error ? error.message : "项目恢复失败。"));
   }
 
@@ -578,7 +744,7 @@ function App() {
         <div>
           <p className="eyebrow">Meta Screening Workbench</p>
           <h1>Meta 文献筛选工作台</h1>
-          <p className="topSubline">双人盲筛 · 第三人裁决 · 全文复筛 · 数据提取</p>
+          <p className="topSubline">联网协作路线 · 双人盲筛 · 全文复筛 · 数据提取 · PRISMA 导出</p>
         </div>
         <div className="topActions">
           <label className="fileAction">
@@ -599,6 +765,12 @@ function App() {
 
       <section className="workspace">
         <aside className="sidePanel">
+          <section className="versionBanner">
+            <div className="versionBadge">v2 baseline</div>
+            <strong>当前为本地稳定版</strong>
+            <p>已保留本机自动保存与 JSON 备份。Rayyan 对齐、云端协作、RoB、Meta 统计和 AI 提示将按阶段接入。</p>
+          </section>
+
           <section className="panelBlock">
             <div className="panelTitle">
               <ShieldCheck size={18} />
@@ -668,9 +840,17 @@ function App() {
                 <FileDown size={16} />
                 中文模板
               </button>
-              <button className="ghostButton" onClick={() => updateProject((current) => ({ ...current, references: markDuplicates(current.references) }))} type="button">
+              <button className="ghostButton" disabled={!project.references.length} onClick={recomputeDuplicates} type="button">
                 <Split size={16} />
-                重算去重
+                查重
+              </button>
+              <button className="ghostButton" disabled={!project.references.length} onClick={autoDeduplicateReferences} type="button">
+                <Check size={16} />
+                一键去重
+              </button>
+              <button className="ghostButton" disabled={!missingAbstractWithPmidCount || abstractEnrichmentRunning} onClick={enrichProjectAbstracts} type="button">
+                <Search size={16} />
+                {abstractEnrichmentRunning ? "补全中" : "补摘要"}
               </button>
               <button className="dangerGhostButton" disabled={!project.references.length} onClick={clearReferences} type="button">
                 <Trash2 size={16} />
@@ -704,6 +884,7 @@ function App() {
               setFilters={setFilters}
               setScreeningDecision={setScreeningDecision}
               updateDuplicate={updateDuplicate}
+              updateTranslation={updateReferenceTranslation}
             />
           ) : null}
 
@@ -845,7 +1026,8 @@ function ScreeningView({
   setActiveId,
   setFilters,
   setScreeningDecision,
-  updateDuplicate
+  updateDuplicate,
+  updateTranslation
 }: {
   active: ReferenceRecord | null;
   filters: FilterState;
@@ -856,9 +1038,13 @@ function ScreeningView({
   setFilters: React.Dispatch<React.SetStateAction<FilterState>>;
   setScreeningDecision: (referenceId: string, decision: Decision, reason?: string, note?: string) => void;
   updateDuplicate: (referenceId: string, status: ReferenceRecord["duplicateStatus"]) => void;
+  updateTranslation: (referenceId: string, patch: Partial<ReferenceTranslation>) => void;
 }) {
   const currentDecision = active?.decisions[role];
+  const [readingMode, setReadingMode] = React.useState<"source" | "bilingual" | "edit">("source");
   const paged = usePagedItems(references, SCREENING_PAGE_SIZE, [filters.query, filters.decision, filters.duplicate, role]);
+  const titleZh = active?.translation?.titleZh?.trim() || "";
+  const abstractZh = active?.translation?.abstractZh?.trim() || "";
 
   React.useEffect(() => {
     if (paged.pageItems.length && !paged.pageItems.some((reference) => reference.id === active?.id)) {
@@ -922,7 +1108,9 @@ function ScreeningView({
             <div className="paperHeader">
               <div>
                 <p className="eyebrow">Title and abstract screening</p>
-                <h2>{active.title || "未命名题录"}</h2>
+                <div className="paperTitleScroll">
+                  <h2>{active.title || "未命名题录"}</h2>
+                </div>
                 <p>{[active.authors, active.year, active.journal].filter(Boolean).join(" · ")}</p>
               </div>
               <div className="paperHeaderActions">
@@ -935,9 +1123,50 @@ function ScreeningView({
                 ) : null}
               </div>
             </div>
-            <div className="abstractBox">
-              <p>{active.abstract || "暂无摘要。"}</p>
+            <div className="readingModeTabs" role="group" aria-label="文献显示模式">
+              <button className={readingMode === "source" ? "active" : ""} onClick={() => setReadingMode("source")} type="button">原文</button>
+              <button className={readingMode === "bilingual" ? "active" : ""} onClick={() => setReadingMode("bilingual")} type="button">中英文对照</button>
+              <button className={readingMode === "edit" ? "active" : ""} onClick={() => setReadingMode("edit")} type="button">译文编辑</button>
             </div>
+            {readingMode === "source" ? (
+              <div className="abstractBox">
+                <p>{active.abstract || "暂无摘要。"}</p>
+              </div>
+            ) : null}
+            {readingMode === "bilingual" ? (
+              <div className="bilingualStack">
+                <section className="readingBlock">
+                  <span>英文摘要</span>
+                  <p>{active.abstract || "暂无摘要。"}</p>
+                </section>
+                <section className="readingBlock translated">
+                  <span>中文译文</span>
+                  <h3>{titleZh || "暂无中文标题译文"}</h3>
+                  <p>{abstractZh || "暂无中文摘要译文"}</p>
+                </section>
+              </div>
+            ) : null}
+            {readingMode === "edit" ? (
+              <div className="translationEditor">
+                <label>
+                  中文标题译文
+                  <textarea
+                    value={active.translation?.titleZh || ""}
+                    onChange={(event) => updateTranslation(active.id, { titleZh: event.target.value })}
+                    placeholder="在这里粘贴中文标题译文"
+                  />
+                </label>
+                <label>
+                  中文摘要译文
+                  <textarea
+                    className="abstractTranslationInput"
+                    value={active.translation?.abstractZh || ""}
+                    onChange={(event) => updateTranslation(active.id, { abstractZh: event.target.value })}
+                    placeholder="在这里粘贴中文摘要译文"
+                  />
+                </label>
+              </div>
+            ) : null}
             <div className="metadataGrid">
               <Meta label="DOI" value={active.doi} />
               <Meta label="PMID" value={active.pmid} />
@@ -1312,20 +1541,47 @@ type BrowserSaveResult = {
 };
 
 function readProject(): ReviewProject {
-  try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "");
-    if (stored?.references && stored?.auditLog) return stored;
-  } catch {
-    // fall back to seed
-  }
-  return createSeedProject(true);
+  return readProjectFromLocalStorage() || createSeedProject(true);
 }
 
-function shouldUseStoredProject(stored: ReviewProject, current: ReviewProject) {
-  const storedTime = Date.parse(stored.updatedAt || stored.createdAt || "");
-  const currentTime = Date.parse(current.updatedAt || current.createdAt || "");
-  if (Number.isFinite(storedTime) && Number.isFinite(currentTime) && storedTime > currentTime) return true;
-  return stored.references.length > current.references.length && stored.updatedAt === current.updatedAt;
+function readProjectFromLocalStorage(): ReviewProject | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "");
+    if (isValidProject(stored)) return stored;
+  } catch {
+    // fall back to IndexedDB or seed
+  }
+  return null;
+}
+
+function isValidProject(value: unknown): value is ReviewProject {
+  const candidate = value as Partial<ReviewProject> | null;
+  return Boolean(candidate && Array.isArray(candidate.references) && Array.isArray(candidate.auditLog));
+}
+
+function chooseStartupProject(indexedDbProject: ReviewProject | null, localStorageProject: ReviewProject | null) {
+  if (!isValidProject(indexedDbProject)) return localStorageProject;
+  if (isClearlyNewerCompleteProject(localStorageProject, indexedDbProject)) return localStorageProject;
+  return indexedDbProject;
+}
+
+function isClearlyNewerCompleteProject(candidate: ReviewProject | null, baseline: ReviewProject) {
+  if (!isValidProject(candidate)) return false;
+  if (candidate.id !== baseline.id) return false;
+  const candidateTime = projectTimestamp(candidate);
+  const baselineTime = projectTimestamp(baseline);
+  if (!Number.isFinite(candidateTime) || !Number.isFinite(baselineTime)) return false;
+  return candidateTime >= baselineTime;
+}
+
+function projectTimestamp(project: ReviewProject) {
+  return Date.parse(project.updatedAt || project.createdAt || "");
+}
+
+function saveResultMessage(result: BrowserSaveResult) {
+  if (result.indexedDbSaved) return `已自动保存到本机数据库：${formatBytes(result.bytes)}`;
+  if (result.localStorageSaved) return `已保存到浏览器临时存储：${formatBytes(result.bytes)}`;
+  return `已保存到本机数据库，浏览器临时存储仅保留索引：${formatBytes(result.bytes)}`;
 }
 
 async function saveProjectToBrowserStorage(project: ReviewProject): Promise<BrowserSaveResult> {
@@ -1376,6 +1632,7 @@ function estimateProjectBytes(project: ReviewProject) {
     characters += 900;
     characters += reference.title.length + reference.abstract.length + reference.authors.length + reference.journal.length;
     characters += reference.doi.length + reference.pmid.length + reference.database.length + reference.keywords.length + reference.notes.length;
+    characters += (reference.translation?.titleZh || "").length + (reference.translation?.abstractZh || "").length;
     characters += Object.keys(reference.decisions).length * 180;
     characters += Object.values(reference.extraction).join("").length;
     characters += reference.fullText.pdfPath.length + reference.fullText.reason.length + reference.fullText.note.length;
@@ -1607,7 +1864,7 @@ function parseBibtex(text: string, fileName: string): ReferenceRecord[] {
     const field = (name: string) => cleanBib(fields[name.toLowerCase()] || "");
     return createReference({
       title: field("title"),
-      abstract: field("abstract"),
+      abstract: first(field("abstract"), field("abstractnote"), field("annote"), field("description")),
       authors: field("author"),
       year: field("year"),
       journal: field("journal") || field("booktitle"),
@@ -1789,7 +2046,7 @@ function parseCsv(text: string, fileName: string): ReferenceRecord[] {
     const firstCell = row.find((cell) => cell.trim()) || "";
     const reference = createReference({
       title: get("标题", "title", "article title", "文献题名", "题名", "title题名", "题　名") || firstCell,
-      abstract: get("摘要", "文摘", "文　摘", "abstract"),
+      abstract: get(...abstractFieldNames),
       authors: get("作者", "姓名", "authors", "author", "creator", "author作者", "作　者"),
       year: get("年份", "年", "出版年", "发表时间", "发表年份", "year", "publication year"),
       journal: get("期刊", "刊名", "刊　名", "文献来源", "来源", "journal", "journal/book", "source title", "source-文献来源", "publication", "source"),
@@ -1803,6 +2060,93 @@ function parseCsv(text: string, fileName: string): ReferenceRecord[] {
   });
 
   return references;
+}
+
+type AbstractEnrichmentResult = {
+  references: ReferenceRecord[];
+  enriched: number;
+  attempted: number;
+  failed: number;
+};
+
+async function enrichMissingPubMedAbstracts(
+  references: ReferenceRecord[],
+  onProgress?: (completedBatches: number, totalBatches: number) => void
+): Promise<AbstractEnrichmentResult> {
+  const pmids = Array.from(new Set(references
+    .filter((reference) => !reference.abstract)
+    .map((reference) => normalizePmid(reference.pmid))
+    .filter(Boolean)));
+  if (!pmids.length) return { references, enriched: 0, attempted: 0, failed: 0 };
+
+  const batchSize = 150;
+  const batches: string[][] = [];
+  for (let index = 0; index < pmids.length; index += batchSize) {
+    batches.push(pmids.slice(index, index + batchSize));
+  }
+
+  const abstractsByPmid = new Map<string, string>();
+  let failed = 0;
+  for (const [batchIndex, batch] of batches.entries()) {
+    try {
+      const batchAbstracts = await fetchPubMedAbstractBatch(batch);
+      batchAbstracts.forEach((abstract, pmid) => abstractsByPmid.set(pmid, abstract));
+    } catch {
+      failed += batch.length;
+    }
+    onProgress?.(batchIndex + 1, batches.length);
+    if (batchIndex < batches.length - 1) await delay(350);
+  }
+
+  let enriched = 0;
+  const enrichedReferences = references.map((reference) => {
+    if (reference.abstract) return reference;
+    const pmid = normalizePmid(reference.pmid);
+    const abstract = pmid ? abstractsByPmid.get(pmid) : "";
+    if (!abstract) return reference;
+    enriched += 1;
+    return { ...reference, abstract };
+  });
+
+  return {
+    references: enrichedReferences,
+    enriched,
+    attempted: pmids.length,
+    failed
+  };
+}
+
+async function fetchPubMedAbstractBatch(pmids: string[]): Promise<Map<string, string>> {
+  const url = new URL("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi");
+  url.searchParams.set("db", "pubmed");
+  url.searchParams.set("id", pmids.join(","));
+  url.searchParams.set("retmode", "xml");
+  url.searchParams.set("tool", "meta_screening_workbench");
+
+  const response = await fetch(url.toString());
+  if (!response.ok) throw new Error(`PubMed request failed: ${response.status}`);
+
+  const xmlText = await response.text();
+  const document = new DOMParser().parseFromString(xmlText, "application/xml");
+  const articles = Array.from(document.getElementsByTagName("PubmedArticle"));
+  const abstracts = new Map<string, string>();
+
+  for (const article of articles) {
+    const pmid = article.getElementsByTagName("PMID")[0]?.textContent?.trim() || "";
+    if (!pmid) continue;
+    const abstractTexts = Array.from(article.getElementsByTagName("AbstractText"))
+      .map((node) => {
+        const label = node.getAttribute("Label") || node.getAttribute("NlmCategory") || "";
+        const text = clean(node.textContent);
+        if (!text) return "";
+        return label ? `${label}: ${text}` : text;
+      })
+      .filter(Boolean);
+    const abstract = clean(abstractTexts.join(" "));
+    if (abstract) abstracts.set(pmid, abstract);
+  }
+
+  return abstracts;
 }
 
 function isHeaderRow(row: string[]): boolean {
@@ -1875,6 +2219,59 @@ function markDuplicates(references: ReferenceRecord[]): ReferenceRecord[] {
       duplicateStatus: reference.duplicateStatus === "resolvedKept" || reference.duplicateStatus === "resolvedRemoved" ? reference.duplicateStatus : "possible"
     };
   });
+}
+
+function autoResolveDuplicates(references: ReferenceRecord[]) {
+  const marked = markDuplicates(references);
+  const groups = new Map<string, ReferenceRecord[]>();
+  for (const reference of marked) {
+    if (!reference.duplicateGroupId) continue;
+    groups.set(reference.duplicateGroupId, [...(groups.get(reference.duplicateGroupId) || []), reference]);
+  }
+
+  const statusById = new Map<string, ReferenceRecord["duplicateStatus"]>();
+  let removed = 0;
+  let kept = 0;
+
+  for (const group of groups.values()) {
+    const activeGroup = group.filter((reference) => reference.duplicateStatus !== "resolvedRemoved");
+    if (activeGroup.length < 2) continue;
+    const keeper = activeGroup.slice().sort((a, b) => duplicateKeepScore(b) - duplicateKeepScore(a))[0];
+    for (const reference of activeGroup) {
+      if (reference.id === keeper.id) {
+        statusById.set(reference.id, "resolvedKept");
+        kept += 1;
+      } else {
+        statusById.set(reference.id, "resolvedRemoved");
+        removed += 1;
+      }
+    }
+  }
+
+  return {
+    references: marked.map((reference) => statusById.has(reference.id)
+      ? { ...reference, duplicateStatus: statusById.get(reference.id)! }
+      : reference),
+    groups: Array.from(groups.values()).filter((group) => group.filter((reference) => reference.duplicateStatus !== "resolvedRemoved").length > 1).length,
+    kept,
+    removed
+  };
+}
+
+function duplicateKeepScore(reference: ReferenceRecord) {
+  const screenedCount = Object.keys(reference.decisions).length;
+  const extractionText = Object.values(reference.extraction).join(" ");
+  return screenedCount * 1000
+    + (reference.adjudication ? 600 : 0)
+    + (reference.fullText.decision ? 400 : 0)
+    + (reference.abstract ? Math.min(reference.abstract.length, 1200) : 0)
+    + (reference.doi ? 180 : 0)
+    + (reference.pmid ? 180 : 0)
+    + (reference.journal ? 120 : 0)
+    + (reference.authors ? 100 : 0)
+    + (reference.year ? 80 : 0)
+    + (reference.keywords ? 60 : 0)
+    + (extractionText.trim() ? 300 : 0);
 }
 
 function replaceReference(references: ReferenceRecord[], referenceId: string, updater: (reference: ReferenceRecord) => ReferenceRecord) {
@@ -2107,8 +2504,11 @@ function normalizeHeader(value: string) {
   return value
     .replace(/^\uFEFF/, "")
     .toLowerCase()
-    .replace(/[\s　]+/g, "")
-    .replace(/[：:\/\\-]/g, "");
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function normalizePmid(value: string) {
+  return clean(value).match(/\d{5,9}/)?.[0] || "";
 }
 
 function normalizeTitle(value: string) {
@@ -2159,7 +2559,11 @@ function nowIso() {
 }
 
 function yieldToBrowser() {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  return delay(0);
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
 function createId(prefix: string) {

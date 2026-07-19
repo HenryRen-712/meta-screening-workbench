@@ -1135,6 +1135,155 @@ textarea:focus {
   width: auto;
 }
 
+.extractionWorkspace {
+  --extraction-toolbar-height: 54px;
+}
+
+.extractionWorkspace:focus {
+  outline: none;
+}
+
+.extractionDisplayBar {
+  align-items: center;
+  background: #f2f8ff;
+  border: 1px solid #c6dff4;
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 9px 10px;
+}
+
+.extractionDisplayLabel,
+.extractionDisplayControls {
+  align-items: center;
+  display: flex;
+}
+
+.extractionDisplayLabel {
+  color: #24577f;
+  gap: 8px;
+  min-width: 0;
+}
+
+.extractionDisplayLabel > span {
+  display: grid;
+  gap: 1px;
+}
+
+.extractionDisplayLabel strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.extractionDisplayLabel small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.extractionDisplayControls {
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.viewControlButton,
+.viewResetButton,
+.fullscreenToggleButton {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 850;
+  justify-content: center;
+  min-height: 34px;
+}
+
+.viewControlButton,
+.viewResetButton {
+  background: var(--surface-strong);
+  color: #24577f;
+}
+
+.viewControlButton {
+  min-width: 36px;
+  padding: 0 8px;
+}
+
+.viewResetButton {
+  padding: 0 10px;
+}
+
+.fullscreenToggleButton {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #ffffff;
+  gap: 6px;
+  padding: 0 12px;
+}
+
+.viewControlButton:hover,
+.viewResetButton:hover {
+  background: var(--blue-soft);
+}
+
+.fullscreenToggleButton:hover {
+  background: var(--blue-strong);
+}
+
+.viewControlButton:disabled,
+.viewResetButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.zoomValue {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+  min-width: 46px;
+  text-align: center;
+}
+
+.extractionWorkspace.isFullscreen {
+  background: var(--surface);
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  inset: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px 20px;
+  position: fixed;
+  width: 100vw;
+  z-index: 1000;
+}
+
+.extractionWorkspace.isFullscreen .extractionDisplayBar {
+  border-left: 0;
+  border-radius: 0;
+  border-right: 0;
+  box-shadow: 0 10px 24px rgba(20, 73, 118, 0.12);
+  flex: 0 0 auto;
+  margin: -16px -18px 14px;
+  padding: 10px 18px;
+  position: sticky;
+  top: -16px;
+  z-index: 20;
+}
+
+.extractionWorkspace.isFullscreen .extractionTableWrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  flex: 1 1 auto;
+  min-height: 260px;
+}
+
 .integrityNotice {
   align-items: flex-start;
   background: #f1f8ff;
@@ -1273,6 +1422,7 @@ textarea:focus {
 .extractionTable {
   border-collapse: collapse;
   min-width: 1100px;
+  transform-origin: left top;
   width: 100%;
 }
 
@@ -1492,6 +1642,21 @@ textarea:focus {
   .extractionActions .secondaryButton,
   .extractionActions .ghostButton {
     width: 100%;
+  }
+
+  .extractionDisplayBar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .extractionDisplayControls {
+    justify-content: flex-start;
+  }
+
+  .extractionDisplayControls .viewControlButton,
+  .extractionDisplayControls .viewResetButton,
+  .extractionDisplayControls .fullscreenToggleButton {
+    width: auto;
   }
 
   .fieldGroup {

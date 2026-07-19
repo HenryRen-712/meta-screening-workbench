@@ -19,6 +19,8 @@ import {
   History,
   Import,
   ListChecks,
+  Maximize2,
+  Minimize2,
   Paperclip,
   Plus,
   Search,
@@ -27,7 +29,9 @@ import {
   Table2,
   Trash2,
   UploadCloud,
-  Users
+  Users,
+  ZoomIn,
+  ZoomOut
 } from "lucide-react";
 import "./styles.css";
 import {
@@ -1680,12 +1684,90 @@ function ExtractionView({
   openPdf: (attachment: PdfAttachment) => void;
 }) {
   const paged = usePagedItems(references, REVIEW_PAGE_SIZE, [references.length, fields.length]);
+  const [isFullscreen, setIsFullscreen] = React.useState(false);
+  const [zoomPercent, setZoomPercent] = React.useState(100);
+  const workspaceRef = React.useRef<HTMLElement>(null);
   const attachedCount = references.filter((reference) => reference.fullText.pdf).length;
   const extractedCount = references.filter((reference) => reference.autoExtraction?.status === "draft_needs_review").length;
   const customFields = fields.filter((field) => !(META_EXTRACTION_FIELDS as readonly string[]).includes(field));
 
+  React.useEffect(() => {
+    if (!isFullscreen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsFullscreen(false);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    workspaceRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isFullscreen]);
+
+  const adjustZoom = (change: number) => {
+    setZoomPercent((current) => Math.min(130, Math.max(50, current + change)));
+  };
+
+  const toggleFullscreen = () => {
+    setIsFullscreen((current) => {
+      if (!current && zoomPercent === 100) setZoomPercent(80);
+      return !current;
+    });
+  };
+
   return (
-    <section className="contentBlock">
+    <section
+      aria-label="最终纳入文献与 Meta 数据提取工作区"
+      className={`contentBlock extractionWorkspace${isFullscreen ? " isFullscreen" : ""}`}
+      ref={workspaceRef}
+      tabIndex={-1}
+    >
+      <div className="extractionDisplayBar">
+        <div className="extractionDisplayLabel">
+          <Table2 size={18} />
+          <span>
+            <strong>数据表显示</strong>
+            <small>{isFullscreen ? "全屏工作区·按 Esc 退出" : "全屏后可一屏查看更多字段"}</small>
+          </span>
+        </div>
+        <div className="extractionDisplayControls" aria-label="数据表显示控制">
+          <button
+            aria-label="缩小数据表"
+            className="viewControlButton"
+            disabled={zoomPercent <= 50}
+            onClick={() => adjustZoom(-10)}
+            title="缩小数据表"
+            type="button"
+          >
+            <ZoomOut size={17} />
+          </button>
+          <output aria-live="polite" className="zoomValue">{zoomPercent}%</output>
+          <button
+            aria-label="放大数据表"
+            className="viewControlButton"
+            disabled={zoomPercent >= 130}
+            onClick={() => adjustZoom(10)}
+            title="放大数据表"
+            type="button"
+          >
+            <ZoomIn size={17} />
+          </button>
+          <button className="viewResetButton" disabled={zoomPercent === 100} onClick={() => setZoomPercent(100)} type="button">
+            恢复 100%
+          </button>
+          <button
+            aria-pressed={isFullscreen}
+            className="fullscreenToggleButton"
+            onClick={toggleFullscreen}
+            type="button"
+          >
+            {isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+            {isFullscreen ? "退出全屏" : "全屏工作区"}
+          </button>
+        </div>
+      </div>
       <div className="sectionHeader">
         <div>
           <p className="eyebrow">Data extraction</p>
@@ -1758,7 +1840,7 @@ function ExtractionView({
         totalPages={paged.totalPages}
       />
       <div className="extractionTableWrap">
-        <table className="extractionTable">
+        <table className="extractionTable" style={{ zoom: zoomPercent / 100 }}>
           <thead>
             <tr>
               <th>文献</th>

@@ -36,7 +36,7 @@ PATH="/Users/gavinren/.cache/codex-runtimes/codex-primary-runtime/dependencies/n
 - 双人盲筛：筛选者 A/B 独立完成纳入、排除、待定。
 - 揭盲冲突：两人完成后查看冲突，由裁决者给出最终决定。
 - 全文复筛：记录全文获取状态、PDF 本机路径、全文决定和排除理由。
-- 数据提取：最终纳入文献进入自定义数据提取表。
+- 数据提取：最终纳入文献可再次批量上传 PDF，按 DOI、PMID、完整题名自动匹配，并一键生成带原文证据、页码和 PDF SHA-256 的 Meta 数据提取草稿。
 - 审计日志：记录导入、筛选、裁决、全文复筛和数据提取操作。
 - 导出：完整筛选记录 CSV、PRISMA 统计 CSV、数据提取表 CSV、Word 报告草稿、项目 JSON 备份。
 
@@ -47,7 +47,7 @@ PATH="/Users/gavinren/.cache/codex-runtimes/codex-primary-runtime/dependencies/n
 ## 第一版限制
 
 - 不做云同步和多人在线协作。
-- 不做 AI 自动预筛。
+- 不做 AI 自动预筛；PDF 自动提取采用本机确定性原文定位，不调用外部模型，不推断未报告信息。
 - 不做 Meta 统计计算、森林图和异质性分析。
-- 不内置复杂 PDF 阅读器，只记录 PDF 在本机的位置。
+- PDF 文字层可在本机浏览器读取；扫描版、图片表格、受保护文件和复杂跨行表格可能需要人工提取或 OCR。
 - 质量评价模块暂时预留，不内置 NOS、JBI 或 RoB 量表。

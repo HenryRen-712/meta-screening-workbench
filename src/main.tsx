@@ -13,11 +13,13 @@ import {
   FileDown,
   FileSpreadsheet,
   FileText,
+  FileUp,
   Filter,
   FolderOpen,
   History,
   Import,
   ListChecks,
+  Paperclip,
   Plus,
   Search,
   ShieldCheck,
@@ -28,6 +30,12 @@ import {
   Users
 } from "lucide-react";
 import "./styles.css";
+import {
+  extractMetaEvidenceFromPdf,
+  META_EXTRACTION_FIELDS,
+  META_EXTRACTION_FIELD_GROUPS
+} from "./pdfExtraction";
+import type { AutoExtractionRecord, ExtractionEvidenceRecord } from "./pdfExtraction";
 
 type Role = "reviewerA" | "reviewerB" | "adjudicator";
 type Stage = "titleAbstract" | "conflicts" | "fullText" | "extraction" | "exports" | "audit";
@@ -70,6 +78,8 @@ type ReferenceRecord = {
   adjudication?: ScreeningDecision;
   fullText: FullTextReview;
   extraction: Record<string, string>;
+  extractionEvidence?: Record<string, ExtractionEvidenceRecord>;
+  autoExtraction?: AutoExtractionRecord;
   translation?: ReferenceTranslation;
   notes: string;
 };
@@ -91,10 +101,28 @@ type ScreeningDecision = {
 type FullTextReview = {
   status: FullTextStatus;
   pdfPath: string;
+  pdf?: PdfAttachment;
   decision: Decision | "";
   reason: string;
   note: string;
   reviewedAt: string;
+};
+
+type PdfAttachment = {
+  id: string;
+  name: string;
+  size: number;
+  uploadedAt: string;
+  matchMethod: "doi" | "pmid" | "title";
+};
+
+type StoredPdfAttachment = PdfAttachment & {
+  blob: Blob;
+};
+
+type PdfMatch = {
+  referenceId: string;
+  method: PdfAttachment["matchMethod"];
 };
 
 type AuditEntry = {
@@ -121,13 +149,19 @@ type ProjectStats = {
   finalIncluded: number;
   excluded: number;
   maybe: number;
-  fullTextIncluded: number;
+  fullTextCandidates: number;
+  fullTextReviewed: number;
+  fullTextFinalIncluded: number;
+  fullTextExcluded: number;
+  fullTextPending: number;
+  fullTextNotRetrieved: number;
 };
 
 const STORAGE_KEY = "meta_screening_project_v1";
 const STORAGE_META_KEY = `${STORAGE_KEY}_meta`;
 const STORAGE_DB_NAME = "meta_screening_project_db";
 const STORAGE_STORE_NAME = "projects";
+const PDF_STORE_NAME = "pdfFiles";
 const STORAGE_PROJECT_ID = "active";
 const SCREENING_PAGE_SIZE = 100;
 const REVIEW_PAGE_SIZE = 40;
@@ -165,18 +199,7 @@ const defaultReasons = [
   "数据不足"
 ];
 
-const defaultExtractionFields = [
-  "研究设计",
-  "国家/地区",
-  "样本量",
-  "研究对象",
-  "暴露/干预",
-  "对照",
-  "结局指标",
-  "效应量",
-  "调整变量",
-  "主要结论"
-];
+const defaultExtractionFields = [...META_EXTRACTION_FIELDS];
 
 const coreHeaderNames = new Set([
   "标题",
@@ -275,6 +298,8 @@ type ProjectIndex = {
   conflicts: ReferenceRecord[];
   finalIncluded: ReferenceRecord[];
   fullTextCandidates: ReferenceRecord[];
+  fullTextFinalIncluded: ReferenceRecord[];
+  extractionCandidates: ReferenceRecord[];
   stats: ProjectStats;
 };
 
@@ -289,6 +314,8 @@ function App() {
   const [storageReady, setStorageReady] = React.useState(false);
   const [storageStatus, setStorageStatus] = React.useState("正在检查本机保存状态");
   const [abstractEnrichmentRunning, setAbstractEnrichmentRunning] = React.useState(false);
+  const [autoExtractionRunning, setAutoExtractionRunning] = React.useState(false);
+  const [autoExtractionProgress, setAutoExtractionProgress] = React.useState("");
   const deferredFilters = React.useDeferredValue(filters);
 
   React.useEffect(() => {
@@ -361,7 +388,7 @@ function App() {
     [project.references, deferredFilters, role]
   );
   const active = projectIndex.byId.get(activeId) || visibleReferences[0] || project.references[0] || null;
-  const { conflicts, finalIncluded, fullTextCandidates, stats } = projectIndex;
+  const { conflicts, fullTextCandidates, extractionCandidates, stats } = projectIndex;
   const repairablePubMedCount = React.useMemo(
     () => project.references.filter((reference) => needsPubMedRepair(reference)).length,
     [project.references]
@@ -662,16 +689,236 @@ function App() {
     }, role, "全文复筛", summarizeFullTextPatch(patch));
   }
 
+  async function importFullTextPdfs(fileList: FileList | null, scope: "fullText" | "included" = "fullText") {
+    if (!fileList?.length) return;
+    if (!projectRef.current.references.length) {
+      setMessage("请先导入题录，再上传 PDF 进行自动匹配。");
+      return;
+    }
+
+    const pdfFiles = Array.from(fileList).filter((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
+    const skipped = fileList.length - pdfFiles.length;
+    if (!pdfFiles.length) {
+      setMessage("没有识别到 PDF 文件。请选择扩展名为 .pdf 的全文文件。");
+      return;
+    }
+
+    const sourceProject = projectRef.current;
+    const sourceIndex = buildProjectIndex(sourceProject.references);
+    const targetReferences = scope === "included" ? sourceIndex.extractionCandidates : sourceIndex.fullTextCandidates;
+    if (!targetReferences.length) {
+      setMessage(scope === "included"
+        ? "当前没有全文最终纳入条目，无法在数据提取板块匹配 PDF。"
+        : "当前没有进入全文阶段的条目。请先完成双方题名摘要筛选并处理裁决，再上传 PDF。");
+      return;
+    }
+    const attachmentByReference = new Map<string, { attachment: PdfAttachment; file: File }>();
+    const unmatched: string[] = [];
+    const errors: string[] = [];
+
+    setMessage(`正在为${scope === "included" ? "最终纳入文献" : "全文候选"}匹配 ${pdfFiles.length} 个 PDF。优先使用 DOI、PMID，再使用完整题名文件名。`);
+    await yieldToBrowser();
+
+    for (const [index, file] of pdfFiles.entries()) {
+      setMessage(`正在匹配并保存 PDF：${index + 1}/${pdfFiles.length}`);
+      const match = matchPdfToReference(file.name, targetReferences);
+      if (!match) {
+        unmatched.push(file.name);
+        continue;
+      }
+
+      const attachment: PdfAttachment = {
+        id: createId("pdf"),
+        name: file.name,
+        size: file.size,
+        uploadedAt: nowIso(),
+        matchMethod: match.method
+      };
+
+      try {
+        await writePdfToIndexedDb(attachment, file);
+        const previous = attachmentByReference.get(match.referenceId);
+        if (previous) void deletePdfFromIndexedDb(previous.attachment.id);
+        attachmentByReference.set(match.referenceId, { attachment, file });
+      } catch {
+        errors.push(file.name);
+      }
+      await yieldToBrowser();
+    }
+
+    if (!attachmentByReference.size) {
+      setMessage(`未能自动匹配任何 PDF。未匹配 ${unmatched.length} 个文件，请将文件名改为包含 DOI、PMID 或完整题名后再次上传。`);
+      return;
+    }
+
+    const newAttachmentIds = new Set(Array.from(attachmentByReference.values()).map((item) => item.attachment.id));
+    const replacedAttachmentIds = sourceProject.references
+      .filter((reference) => attachmentByReference.has(reference.id))
+      .map((reference) => reference.fullText.pdf?.id)
+      .filter((id): id is string => Boolean(id && !newAttachmentIds.has(id)));
+    const matchedByMethod = Array.from(attachmentByReference.values()).reduce<Record<PdfAttachment["matchMethod"], number>>(
+      (counts, item) => ({ ...counts, [item.attachment.matchMethod]: counts[item.attachment.matchMethod] + 1 }),
+      { doi: 0, pmid: 0, title: 0 }
+    );
+    const references = sourceProject.references.map((reference) => {
+      const uploaded = attachmentByReference.get(reference.id);
+      if (!uploaded) return reference;
+      return {
+        ...reference,
+        fullText: {
+          ...reference.fullText,
+          status: "retrieved" as FullTextStatus,
+          pdfPath: uploaded.attachment.name,
+          pdf: uploaded.attachment
+        }
+      };
+    });
+    const nextProject = {
+      ...logProject(
+        { ...sourceProject, references },
+        role,
+        scope === "included" ? "批量上传纳入文献 PDF" : "批量上传全文 PDF",
+        scope === "included" ? "数据提取库" : "全文库",
+        `匹配 ${attachmentByReference.size} 个（DOI ${matchedByMethod.doi}，PMID ${matchedByMethod.pmid}，题名 ${matchedByMethod.title}）`
+      ),
+      updatedAt: nowIso()
+    };
+
+    projectRef.current = nextProject;
+    setProject(nextProject);
+    try {
+      await persistProjectNow(nextProject);
+      await Promise.all(replacedAttachmentIds.map((id) => deletePdfFromIndexedDb(id)));
+      const details = [
+        `已匹配并保存 ${attachmentByReference.size} 个 PDF`,
+        unmatched.length ? `${unmatched.length} 个未匹配` : "",
+        skipped ? `${skipped} 个非 PDF 已跳过` : "",
+        errors.length ? `${errors.length} 个保存失败` : ""
+      ].filter(Boolean).join("；");
+      setMessage(`${details}。未匹配文件仍保留在您的电脑中，可改名后重新上传。`);
+    } catch {
+      setStorageStatus("PDF 匹配记录保存失败，请立即导出项目备份并重新上传 PDF");
+    }
+  }
+
+  async function openFullTextPdf(attachment: PdfAttachment) {
+    const stored = await readPdfFromIndexedDb(attachment.id);
+    if (!stored) {
+      setMessage("未在当前浏览器找到该 PDF。项目备份只保存匹配记录；换浏览器或设备后需要重新上传原文件。");
+      return;
+    }
+    const url = URL.createObjectURL(stored.blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
+  async function extractIncludedPdfInformation(referenceIds?: string[]) {
+    if (autoExtractionRunning) return;
+    const sourceProject = projectRef.current;
+    const includedReferences = buildProjectIndex(sourceProject.references).extractionCandidates;
+    const selectedIds = referenceIds ? new Set(referenceIds) : null;
+    const targets = includedReferences.filter((reference) => reference.fullText.pdf && (!selectedIds || selectedIds.has(reference.id)));
+
+    if (!targets.length) {
+      setMessage("没有可提取的纳入文献 PDF。请先在数据提取板块上传 PDF 并完成自动匹配。");
+      return;
+    }
+
+    setAutoExtractionRunning(true);
+    setAutoExtractionProgress(`准备提取 ${targets.length} 篇 PDF`);
+    const results = new Map<string, { evidenceByField: Record<string, ExtractionEvidenceRecord>; run: AutoExtractionRecord }>();
+    let completed = 0;
+    let failed = 0;
+
+    try {
+      for (const reference of targets) {
+        const attachment = reference.fullText.pdf as PdfAttachment;
+        setAutoExtractionProgress(`正在读取 ${completed + 1}/${targets.length}：${reference.title}`);
+        setMessage(`正在从本机 PDF 提取有原文证据的数据：${completed + 1}/${targets.length}`);
+        await yieldToBrowser();
+        try {
+          const stored = await readPdfFromIndexedDb(attachment.id);
+          if (!stored) throw new Error("当前浏览器中缺少 PDF 二进制文件，请重新上传原 PDF。");
+          const result = await extractMetaEvidenceFromPdf(stored.blob, attachment.id, {
+            title: reference.title,
+            abstract: reference.abstract
+          });
+          results.set(reference.id, result);
+        } catch (error) {
+          failed += 1;
+          const extractedAt = nowIso();
+          results.set(reference.id, {
+            evidenceByField: Object.fromEntries(META_EXTRACTION_FIELDS.map((field) => [field, {
+              status: "not_found",
+              value: "",
+              evidence: [],
+              pages: [],
+              source: "pdf-local-deterministic",
+              extractedAt
+            } satisfies ExtractionEvidenceRecord])),
+            run: {
+              status: "error",
+              extractedAt,
+              pdfAttachmentId: attachment.id,
+              pdfSha256: "",
+              pagesProcessed: 0,
+              textCharacters: 0,
+              fieldsFound: 0,
+              fieldsTotal: META_EXTRACTION_FIELDS.length,
+              warnings: [error instanceof Error ? error.message : "PDF 读取失败，未生成任何提取值。"]
+            }
+          });
+        }
+        completed += 1;
+        await yieldToBrowser();
+      }
+
+      const references = sourceProject.references.map((reference) => {
+        const result = results.get(reference.id);
+        if (!result) return reference;
+        const extraction = { ...reference.extraction };
+        for (const [field, evidence] of Object.entries(result.evidenceByField)) {
+          const previousAutoValue = reference.extractionEvidence?.[field]?.value || "";
+          if (evidence.status === "found") {
+            if (!clean(extraction[field]) || extraction[field] === previousAutoValue) extraction[field] = evidence.value;
+          } else if ((previousAutoValue && extraction[field] === previousAutoValue) || isAutoExtractedValue(extraction[field])) {
+            extraction[field] = "";
+          }
+        }
+        return {
+          ...reference,
+          extraction,
+          extractionEvidence: {
+            ...reference.extractionEvidence,
+            ...result.evidenceByField
+          },
+          autoExtraction: result.run
+        };
+      });
+      const nextProject = {
+        ...logProject({
+          ...sourceProject,
+          extractionFields: mergeExtractionFields(sourceProject.extractionFields),
+          references
+        }, role, "PDF 一键数据提取", "最终纳入文献", `处理 ${targets.length} 篇；失败 ${failed} 篇；所有结果均需原文复核`),
+        updatedAt: nowIso()
+      };
+      projectRef.current = nextProject;
+      setProject(nextProject);
+      await persistProjectNow(nextProject);
+      setMessage(`已完成 ${targets.length} 篇纳入文献的本地证据提取${failed ? `，其中 ${failed} 篇读取失败` : ""}。结果为待人工核验草稿，未确认字段保持空白。`);
+    } finally {
+      setAutoExtractionRunning(false);
+      setAutoExtractionProgress("");
+    }
+  }
+
   function addExtractionField() {
     const field = window.prompt("新增数据提取字段名称：")?.trim();
     if (!field || project.extractionFields.includes(field)) return;
     updateProject((current) => logProject({
       ...current,
-      extractionFields: [...current.extractionFields, field],
-      references: current.references.map((reference) => ({
-        ...reference,
-        extraction: { ...reference.extraction, [field]: "" }
-      }))
+      extractionFields: [...current.extractionFields, field]
     }, role, "新增提取字段", field, "数据提取表结构已更新"));
   }
 
@@ -703,11 +950,12 @@ function App() {
     file.text().then((text) => {
       const parsed = JSON.parse(text) as ReviewProject;
       if (!parsed.references || !parsed.auditLog) throw new Error("不是有效项目备份。");
-      projectRef.current = parsed;
-      setProject(parsed);
-      setActiveId(parsed.references[0]?.id || "");
+      const migrated = migrateProjectSchema(parsed);
+      projectRef.current = migrated;
+      setProject(migrated);
+      setActiveId(migrated.references[0]?.id || "");
       setMessage("已恢复项目备份。");
-      void persistProjectNow(parsed);
+      void persistProjectNow(migrated);
     }).catch((error) => setMessage(error instanceof Error ? error.message : "项目恢复失败。"));
   }
 
@@ -722,15 +970,49 @@ function App() {
   }
 
   function exportExtraction() {
-    const rows = finalIncluded.map((reference) => ({
+    const rows = extractionCandidates.map((reference) => ({
       标题: reference.title,
       作者: reference.authors,
       年份: reference.year,
       期刊: reference.journal,
       DOI: reference.doi,
-      ...Object.fromEntries(project.extractionFields.map((field) => [field, reference.extraction[field] || ""]))
+      PMID: reference.pmid,
+      PDF文件: reference.fullText.pdf?.name || "",
+      自动提取状态: autoExtractionStatusLabel(reference.autoExtraction),
+      PDF_SHA256: reference.autoExtraction?.pdfSha256 || "",
+      自动提取页数: reference.autoExtraction?.pagesProcessed || "",
+      自动提取时间: reference.autoExtraction?.extractedAt || "",
+      ...Object.fromEntries(project.extractionFields.flatMap((field) => {
+        const evidence = reference.extractionEvidence?.[field];
+        return [
+          [field, reference.extraction[field] || ""],
+          [`${field}__证据状态`, extractionEvidenceStatusLabel(evidence, reference.extraction[field])],
+          [`${field}__PDF页码`, evidence?.pages.join(";") || ""],
+          [`${field}__原文证据`, evidence?.evidence.join("\n") || ""]
+        ];
+      }))
     }));
     downloadText(toCsv(rows), `${safeFileName(project.title)}_数据提取表.csv`, "text/csv;charset=utf-8");
+  }
+
+  function exportMissingFullText() {
+    const rows = fullTextCandidates
+      .filter((reference) => !reference.fullText.pdf)
+      .map((reference) => ({
+        标题: reference.title,
+        作者: reference.authors,
+        年份: reference.year,
+        期刊: reference.journal,
+        DOI: reference.doi,
+        PMID: reference.pmid,
+        来源数据库: reference.database,
+        关键词: reference.keywords,
+        当前全文状态: fullTextStatusLabels[reference.fullText.status],
+        初筛处理状态: isConflict(reference) ? "A/B 冲突，待裁决" : finalDecision(reference) ? decisionLabels[finalDecision(reference) as Decision] : "",
+        PDF文件: "未上传"
+      }));
+    downloadText(toCsv(rows), `${safeFileName(project.title)}_未上传全文候选.csv`, "text/csv;charset=utf-8");
+    setMessage(`已导出 ${rows.length} 条未上传全文候选的关键信息。`);
   }
 
   function exportWordReport() {
@@ -863,8 +1145,8 @@ function App() {
           <nav className="stageNav" aria-label="工作流程">
             <StageButton icon={<ListChecks size={17} />} label="题名摘要" active={stage === "titleAbstract"} count={stats.total} onClick={() => setStage("titleAbstract")} />
             <StageButton icon={<Eye size={17} />} label="揭盲冲突" active={stage === "conflicts"} count={conflicts.length} onClick={() => setStage("conflicts")} />
-            <StageButton icon={<BookOpen size={17} />} label="全文复筛" active={stage === "fullText"} count={stats.fullTextIncluded} onClick={() => setStage("fullText")} />
-            <StageButton icon={<Table2 size={17} />} label="数据提取" active={stage === "extraction"} count={finalIncluded.length} onClick={() => setStage("extraction")} />
+            <StageButton icon={<BookOpen size={17} />} label="全文复筛" active={stage === "fullText"} count={stats.fullTextCandidates} onClick={() => setStage("fullText")} />
+            <StageButton icon={<Table2 size={17} />} label="数据提取" active={stage === "extraction"} count={extractionCandidates.length} onClick={() => setStage("extraction")} />
             <StageButton icon={<Download size={17} />} label="导出报告" active={stage === "exports"} count={4} onClick={() => setStage("exports")} />
             <StageButton icon={<History size={17} />} label="审计日志" active={stage === "audit"} count={project.auditLog.length} onClick={() => setStage("audit")} />
           </nav>
@@ -898,16 +1180,28 @@ function App() {
           ) : null}
 
           {stage === "fullText" ? (
-            <FullTextView references={fullTextCandidates} updateFullText={updateFullText} />
+            <FullTextView
+              references={fullTextCandidates}
+              stats={stats}
+              updateFullText={updateFullText}
+              uploadPdfs={importFullTextPdfs}
+              openPdf={openFullTextPdf}
+            />
           ) : null}
 
           {stage === "extraction" ? (
             <ExtractionView
               fields={project.extractionFields}
-              references={finalIncluded}
+              references={extractionCandidates}
               addField={addExtractionField}
               removeField={removeExtractionField}
               updateExtraction={updateExtraction}
+              uploadPdfs={(fileList) => importFullTextPdfs(fileList, "included")}
+              extractAll={() => { void extractIncludedPdfInformation(); }}
+              extractOne={(referenceId) => { void extractIncludedPdfInformation([referenceId]); }}
+              extractionRunning={autoExtractionRunning}
+              extractionProgress={autoExtractionProgress}
+              openPdf={openFullTextPdf}
             />
           ) : null}
 
@@ -915,6 +1209,7 @@ function App() {
             <ExportView
               exportCsv={exportCsv}
               exportExtraction={exportExtraction}
+              exportMissingFullText={exportMissingFullText}
               exportPrisma={exportPrisma}
               exportWordReport={exportWordReport}
               stats={stats}
@@ -941,10 +1236,11 @@ function StatusStrip({ stats, message, storageStatus, blindingRevealed, onReveal
       </div>
       <div className="metrics">
         <Metric label="总题录" value={stats.total} />
-        <Metric label="A完成" value={stats.reviewerA} />
-        <Metric label="B完成" value={stats.reviewerB} />
-        <Metric label="冲突" value={stats.conflicts} />
-        <Metric label="纳入" value={stats.finalIncluded} />
+        <Metric label="全文候选" value={stats.fullTextCandidates} />
+        <Metric label="已复筛" value={stats.fullTextReviewed} />
+        <Metric label="全文纳入" value={stats.fullTextFinalIncluded} />
+        <Metric label="全文排除" value={stats.fullTextExcluded} />
+        <Metric label="待复筛" value={stats.fullTextPending} />
       </div>
       <button className="primaryButton" onClick={onReveal} type="button">
         <Eye size={17} />
@@ -1256,8 +1552,21 @@ function ConflictView({ project, role, references, adjudicate }: { project: Revi
   );
 }
 
-function FullTextView({ references, updateFullText }: { references: ReferenceRecord[]; updateFullText: (referenceId: string, patch: Partial<FullTextReview>) => void }) {
+function FullTextView({
+  references,
+  stats,
+  updateFullText,
+  uploadPdfs,
+  openPdf
+}: {
+  references: ReferenceRecord[];
+  stats: ProjectStats;
+  updateFullText: (referenceId: string, patch: Partial<FullTextReview>) => void;
+  uploadPdfs: (fileList: FileList | null) => void;
+  openPdf: (attachment: PdfAttachment) => void;
+}) {
   const paged = usePagedItems(references, REVIEW_PAGE_SIZE, [references.length]);
+  const attachedCount = references.filter((reference) => Boolean(reference.fullText.pdf)).length;
 
   return (
     <section className="contentBlock">
@@ -1265,8 +1574,24 @@ function FullTextView({ references, updateFullText }: { references: ReferenceRec
         <div>
           <p className="eyebrow">Full-text screening</p>
           <h2>全文复筛</h2>
+          <p className="helperText">匹配已进入全文阶段的纳入/待定条目及未解决冲突；PDF 保存到当前浏览器本机数据库，并按 DOI、PMID 或完整题名文件名自动匹配。</p>
         </div>
-        <span className="countBadge">{references.length} 篇候选</span>
+        <div className="fullTextActions">
+          <span className="countBadge">候选 {stats.fullTextCandidates}</span>
+          <span className="countBadge">已复筛 {stats.fullTextReviewed}</span>
+          <span className="countBadge">纳入 {stats.fullTextFinalIncluded}</span>
+          <span className="countBadge">排除 {stats.fullTextExcluded}</span>
+          <span className="countBadge">待复筛 {stats.fullTextPending}</span>
+          <span className="countBadge">已上传 {attachedCount}</span>
+          <label className="secondaryButton fileAction pdfUploadAction">
+            <input accept="application/pdf,.pdf" multiple type="file" onChange={(event) => {
+              void uploadPdfs(event.target.files);
+              event.currentTarget.value = "";
+            }} />
+            <FileUp size={17} />
+            上传 PDF 并匹配
+          </label>
+        </div>
       </div>
       <PaginationBar
         endIndex={paged.endIndex}
@@ -1283,6 +1608,19 @@ function FullTextView({ references, updateFullText }: { references: ReferenceRec
             <div>
               <h3>{reference.title}</h3>
               <p>{[reference.authors, reference.year, reference.journal].filter(Boolean).join(" · ")}</p>
+              {isConflict(reference) ? <span className="miniBadge maybe">A/B 冲突，需全文裁决</span> : null}
+            </div>
+            <div className={`pdfAttachment ${reference.fullText.pdf ? "attached" : "missing"}`}>
+              <Paperclip size={16} />
+              {reference.fullText.pdf ? (
+                <>
+                  <span title={reference.fullText.pdf.name}>{reference.fullText.pdf.name}</span>
+                  <small>{formatBytes(reference.fullText.pdf.size)} · {pdfMatchMethodLabel(reference.fullText.pdf.matchMethod)}匹配</small>
+                  <button className="smallButton" onClick={() => openPdf(reference.fullText.pdf as PdfAttachment)} type="button">打开 PDF</button>
+                </>
+              ) : (
+                <span>尚未上传匹配的 PDF</span>
+              )}
             </div>
             <div className="fullTextGrid">
               <label>
@@ -1321,35 +1659,94 @@ function ExtractionView({
   references,
   addField,
   removeField,
-  updateExtraction
+  updateExtraction,
+  uploadPdfs,
+  extractAll,
+  extractOne,
+  extractionRunning,
+  extractionProgress,
+  openPdf
 }: {
   fields: string[];
   references: ReferenceRecord[];
   addField: () => void;
   removeField: (field: string) => void;
   updateExtraction: (referenceId: string, field: string, value: string) => void;
+  uploadPdfs: (fileList: FileList | null) => void;
+  extractAll: () => void;
+  extractOne: (referenceId: string) => void;
+  extractionRunning: boolean;
+  extractionProgress: string;
+  openPdf: (attachment: PdfAttachment) => void;
 }) {
   const paged = usePagedItems(references, REVIEW_PAGE_SIZE, [references.length, fields.length]);
+  const attachedCount = references.filter((reference) => reference.fullText.pdf).length;
+  const extractedCount = references.filter((reference) => reference.autoExtraction?.status === "draft_needs_review").length;
+  const customFields = fields.filter((field) => !(META_EXTRACTION_FIELDS as readonly string[]).includes(field));
 
   return (
     <section className="contentBlock">
       <div className="sectionHeader">
         <div>
           <p className="eyebrow">Data extraction</p>
-          <h2>自定义数据提取表</h2>
+          <h2>最终纳入文献与 Meta 数据提取</h2>
+          <p className="helperText">上传仅匹配全文最终纳入条目。自动提取只复制 PDF 中可定位的原文并记录页码，不推断、不换算、不覆盖人工内容；所有结果在进入 Meta 前必须人工核验。</p>
         </div>
-        <button className="primaryButton" onClick={addField} type="button">
-          <Plus size={17} />
-          新增字段
-        </button>
+        <div className="extractionActions">
+          <span className="countBadge">纳入 {references.length}</span>
+          <span className="countBadge">已匹配 PDF {attachedCount}</span>
+          <span className="countBadge">已生成草稿 {extractedCount}</span>
+          <label className="secondaryButton fileAction pdfUploadAction">
+            <input accept="application/pdf,.pdf" multiple type="file" onChange={(event) => {
+              void uploadPdfs(event.target.files);
+              event.currentTarget.value = "";
+            }} />
+            <FileUp size={17} />
+            上传纳入 PDF 并匹配
+          </label>
+          <button className="primaryButton" disabled={extractionRunning || !attachedCount} onClick={extractAll} type="button">
+            <ClipboardList size={17} />
+            {extractionRunning ? "正在提取" : "一键提取全部已匹配 PDF"}
+          </button>
+          <button className="ghostButton" onClick={addField} type="button">
+            <Plus size={17} />
+            新增自定义字段
+          </button>
+        </div>
       </div>
-      <div className="fieldChips">
-        {fields.map((field) => (
-          <span className="fieldChip" key={field}>
-            {field}
-            <button aria-label={`删除 ${field}`} onClick={() => removeField(field)} type="button"><Trash2 size={13} /></button>
-          </span>
-        ))}
+      <div className="integrityNotice">
+        <ShieldCheck size={18} />
+        <div>
+          <strong>证据约束已启用</strong>
+          <span>字段无原文证据时显示“未从 PDF 自动确认”；扫描版或受保护 PDF 会直接报错，不生成猜测值。PRISMA 2020 负责报告透明性，具体 Meta 字段同时按观察性研究效应量需求扩展。</span>
+        </div>
+      </div>
+      {extractionProgress ? <div className="extractionProgress" role="status">{extractionProgress}</div> : null}
+      <div className="fieldGroupList">
+        {META_EXTRACTION_FIELD_GROUPS.map((group) => {
+          const visibleGroupFields = group.fields.filter((field) => fields.includes(field));
+          return visibleGroupFields.length ? (
+            <div className="fieldGroup" key={group.label}>
+              <strong>{group.label}</strong>
+              <div className="fieldChips">
+                {visibleGroupFields.map((field) => <span className="fieldChip standard" key={field}>{field}</span>)}
+              </div>
+            </div>
+          ) : null;
+        })}
+        {customFields.length ? (
+          <div className="fieldGroup">
+            <strong>自定义字段</strong>
+            <div className="fieldChips">
+              {customFields.map((field) => (
+                <span className="fieldChip" key={field}>
+                  {field}
+                  <button aria-label={`删除 ${field}`} onClick={() => removeField(field)} type="button"><Trash2 size={13} /></button>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
       <PaginationBar
         endIndex={paged.endIndex}
@@ -1374,10 +1771,23 @@ function ExtractionView({
                 <td>
                   <strong>{reference.title}</strong>
                   <span>{[reference.authors, reference.year].filter(Boolean).join(" · ")}</span>
+                  <div className="extractionPaperActions">
+                    {reference.fullText.pdf ? (
+                      <>
+                        <button className="smallButton" onClick={() => openPdf(reference.fullText.pdf as PdfAttachment)} type="button">打开 PDF</button>
+                        <button className="smallButton" disabled={extractionRunning} onClick={() => extractOne(reference.id)} type="button">提取本篇</button>
+                      </>
+                    ) : <span className="evidenceMissing">未上传匹配 PDF</span>}
+                  </div>
+                  <span className={`autoExtractionStatus ${reference.autoExtraction?.status || "pending"}`}>
+                    {autoExtractionStatusLabel(reference.autoExtraction)}
+                  </span>
+                  {reference.autoExtraction?.warnings.map((warning) => <small className="extractionWarning" key={warning}>{warning}</small>)}
                 </td>
                 {fields.map((field) => (
                   <td key={field}>
                     <textarea value={reference.extraction[field] || ""} onChange={(event) => updateExtraction(reference.id, field, event.target.value)} />
+                    <ExtractionEvidence evidence={reference.extractionEvidence?.[field]} manualValue={reference.extraction[field]} />
                   </td>
                 ))}
               </tr>
@@ -1389,9 +1799,25 @@ function ExtractionView({
   );
 }
 
-function ExportView({ exportCsv, exportExtraction, exportPrisma, exportWordReport, stats }: {
+function ExtractionEvidence({ evidence, manualValue }: { evidence?: ExtractionEvidenceRecord; manualValue?: string }) {
+  if (!evidence) {
+    return manualValue?.trim()
+      ? <span className="evidenceManual">人工填写，尚未关联自动证据</span>
+      : <span className="evidencePending">尚未运行 PDF 提取</span>;
+  }
+  if (evidence.status === "not_found") return <span className="evidenceMissing">未从 PDF 自动确认</span>;
+  return (
+    <details className="evidenceDetails">
+      <summary>查看原文证据 · 第 {evidence.pages.join("、")} 页</summary>
+      {evidence.evidence.map((snippet) => <p key={snippet}>{snippet}</p>)}
+    </details>
+  );
+}
+
+function ExportView({ exportCsv, exportExtraction, exportMissingFullText, exportPrisma, exportWordReport, stats }: {
   exportCsv: () => void;
   exportExtraction: () => void;
+  exportMissingFullText: () => void;
   exportPrisma: () => void;
   exportWordReport: () => void;
   stats: ProjectStats;
@@ -1406,8 +1832,9 @@ function ExportView({ exportCsv, exportExtraction, exportPrisma, exportWordRepor
       </div>
       <div className="exportGrid">
         <ExportCard icon={<FileSpreadsheet size={22} />} title="完整筛选记录 CSV" detail="包含题录、双人决定、裁决、全文复筛和最终状态。" onClick={exportCsv} />
-        <ExportCard icon={<FileSpreadsheet size={22} />} title="PRISMA 统计 CSV" detail={`当前总题录 ${stats.total} 条，重复 ${stats.duplicates} 条，最终纳入 ${stats.finalIncluded} 条。`} onClick={exportPrisma} />
+        <ExportCard icon={<FileSpreadsheet size={22} />} title="PRISMA 统计 CSV" detail={`当前总题录 ${stats.total} 条，全文复筛 ${stats.fullTextReviewed} 条，最终纳入 ${stats.fullTextFinalIncluded} 条。`} onClick={exportPrisma} />
         <ExportCard icon={<Table2 size={22} />} title="数据提取表 CSV" detail="导出最终纳入文献的自定义数据提取字段。" onClick={exportExtraction} />
+        <ExportCard icon={<FileDown size={22} />} title="未上传全文候选 CSV" detail="导出待获取全文文献的标题、作者、DOI、PMID 和来源信息。" onClick={exportMissingFullText} />
         <ExportCard icon={<FileText size={22} />} title="Word 报告草稿" detail="生成可放入论文方法部分的筛选流程与统计草稿。" onClick={exportWordReport} />
       </div>
     </section>
@@ -1547,7 +1974,7 @@ function readProject(): ReviewProject {
 function readProjectFromLocalStorage(): ReviewProject | null {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "");
-    if (isValidProject(stored)) return stored;
+    if (isValidProject(stored)) return migrateProjectSchema(stored);
   } catch {
     // fall back to IndexedDB or seed
   }
@@ -1557,6 +1984,16 @@ function readProjectFromLocalStorage(): ReviewProject | null {
 function isValidProject(value: unknown): value is ReviewProject {
   const candidate = value as Partial<ReviewProject> | null;
   return Boolean(candidate && Array.isArray(candidate.references) && Array.isArray(candidate.auditLog));
+}
+
+function migrateProjectSchema(project: ReviewProject): ReviewProject {
+  const extractionFields = mergeExtractionFields(project.extractionFields || []);
+  if (extractionFields.length === project.extractionFields?.length) return project;
+  return { ...project, extractionFields };
+}
+
+function mergeExtractionFields(fields: string[]) {
+  return [...new Set([...fields, ...META_EXTRACTION_FIELDS])];
 }
 
 function chooseStartupProject(indexedDbProject: ReviewProject | null, localStorageProject: ReviewProject | null) {
@@ -1635,6 +2072,8 @@ function estimateProjectBytes(project: ReviewProject) {
     characters += (reference.translation?.titleZh || "").length + (reference.translation?.abstractZh || "").length;
     characters += Object.keys(reference.decisions).length * 180;
     characters += Object.values(reference.extraction).join("").length;
+    characters += JSON.stringify(reference.extractionEvidence || {}).length;
+    characters += JSON.stringify(reference.autoExtraction || {}).length;
     characters += reference.fullText.pdfPath.length + reference.fullText.reason.length + reference.fullText.note.length;
   }
   return characters * 2;
@@ -1663,7 +2102,7 @@ function readProjectFromIndexedDb(): Promise<ReviewProject | null> {
         return;
       }
       const { storageId: _storageId, ...project } = result;
-      resolve(project as ReviewProject);
+      resolve(migrateProjectSchema(project as ReviewProject));
     };
     request.onerror = () => reject(request.error);
   }));
@@ -1678,17 +2117,47 @@ function writeProjectToIndexedDb(project: ReviewProject): Promise<void> {
   }));
 }
 
+function writePdfToIndexedDb(attachment: PdfAttachment, file: File): Promise<void> {
+  return openProjectDatabase().then((database) => new Promise((resolve, reject) => {
+    const transaction = database.transaction(PDF_STORE_NAME, "readwrite");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.objectStore(PDF_STORE_NAME).put({ ...attachment, blob: file });
+  }));
+}
+
+function readPdfFromIndexedDb(attachmentId: string): Promise<StoredPdfAttachment | null> {
+  return openProjectDatabase().then((database) => new Promise((resolve, reject) => {
+    const transaction = database.transaction(PDF_STORE_NAME, "readonly");
+    const request = transaction.objectStore(PDF_STORE_NAME).get(attachmentId);
+    request.onsuccess = () => resolve((request.result as StoredPdfAttachment | undefined) || null);
+    request.onerror = () => reject(request.error);
+  }));
+}
+
+function deletePdfFromIndexedDb(attachmentId: string): Promise<void> {
+  return openProjectDatabase().then((database) => new Promise((resolve, reject) => {
+    const transaction = database.transaction(PDF_STORE_NAME, "readwrite");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.objectStore(PDF_STORE_NAME).delete(attachmentId);
+  }));
+}
+
 function openProjectDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (!("indexedDB" in window)) {
       reject(new Error("IndexedDB is not available"));
       return;
     }
-    const request = indexedDB.open(STORAGE_DB_NAME, 1);
+    const request = indexedDB.open(STORAGE_DB_NAME, 2);
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(STORAGE_STORE_NAME)) {
         database.createObjectStore(STORAGE_STORE_NAME, { keyPath: "storageId" });
+      }
+      if (!database.objectStoreNames.contains(PDF_STORE_NAME)) {
+        database.createObjectStore(PDF_STORE_NAME, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -1776,7 +2245,7 @@ function createReference(input: Partial<ReferenceRecord>): ReferenceRecord {
       note: "",
       reviewedAt: ""
     },
-    extraction: Object.fromEntries(defaultExtractionFields.map((field) => [field, ""])),
+    extraction: {},
     notes: ""
   };
 }
@@ -2340,11 +2809,15 @@ function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
   const conflicts: ReferenceRecord[] = [];
   const finalIncluded: ReferenceRecord[] = [];
   const fullTextCandidates: ReferenceRecord[] = [];
+  const fullTextFinalIncluded: ReferenceRecord[] = [];
   let duplicates = 0;
   let reviewerA = 0;
   let reviewerB = 0;
   let excluded = 0;
   let maybe = 0;
+  let fullTextReviewed = 0;
+  let fullTextExcluded = 0;
+  let fullTextNotRetrieved = 0;
 
   for (const reference of references) {
     byId.set(reference.id, reference);
@@ -2360,16 +2833,31 @@ function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
     } else if (decision === "maybe") {
       maybe += 1;
       fullTextCandidates.push(reference);
+    } else if (isConflict(reference)) {
+      fullTextCandidates.push(reference);
     } else if (decision === "exclude") {
       excluded += 1;
     }
+
+    const isFullTextCandidate = decision === "include" || decision === "maybe" || isConflict(reference);
+    if (isFullTextCandidate) {
+      if (!reference.fullText.pdf) fullTextNotRetrieved += 1;
+      if (reference.fullText.decision) fullTextReviewed += 1;
+      if (reference.fullText.decision === "include") fullTextFinalIncluded.push(reference);
+      if (reference.fullText.decision === "exclude") fullTextExcluded += 1;
+    }
   }
+
+  const fullTextPending = Math.max(fullTextCandidates.length - fullTextReviewed, 0);
+  const extractionCandidates = fullTextReviewed > 0 ? fullTextFinalIncluded : finalIncluded;
 
   return {
     byId,
     conflicts,
     finalIncluded,
     fullTextCandidates,
+    fullTextFinalIncluded,
+    extractionCandidates,
     stats: {
       total: references.length,
       duplicates,
@@ -2379,7 +2867,12 @@ function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
       finalIncluded: finalIncluded.length,
       excluded,
       maybe,
-      fullTextIncluded: fullTextCandidates.length
+      fullTextCandidates: fullTextCandidates.length,
+      fullTextReviewed,
+      fullTextFinalIncluded: fullTextFinalIncluded.length,
+      fullTextExcluded,
+      fullTextPending,
+      fullTextNotRetrieved
     }
   };
 }
@@ -2408,6 +2901,9 @@ function buildExportRows(project: ReviewProject) {
     最终决定: finalDecision(reference) ? decisionLabels[finalDecision(reference) as Decision] : "",
     全文状态: fullTextStatusLabels[reference.fullText.status],
     PDF路径: reference.fullText.pdfPath,
+    PDF文件名: reference.fullText.pdf?.name || "",
+    PDF已上传: reference.fullText.pdf ? "是" : "否",
+    PDF匹配方式: reference.fullText.pdf ? pdfMatchMethodLabel(reference.fullText.pdf.matchMethod) : "",
     全文决定: reference.fullText.decision ? decisionLabels[reference.fullText.decision] : "",
     全文排除理由: reference.fullText.reason,
     备注: reference.notes
@@ -2420,8 +2916,12 @@ function buildPrismaRows(stats: ProjectStats) {
     { 指标: "识别为重复记录", 数量: stats.duplicates },
     { 指标: "进入题名摘要筛选", 数量: Math.max(stats.total - stats.duplicates, 0) },
     { 指标: "题名摘要后排除", 数量: stats.excluded },
-    { 指标: "进入全文评估", 数量: stats.fullTextIncluded },
-    { 指标: "最终纳入", 数量: stats.finalIncluded },
+    { 指标: "寻求获取全文报告", 数量: stats.fullTextCandidates },
+    { 指标: "未获取全文报告", 数量: stats.fullTextNotRetrieved },
+    { 指标: "完成全文复筛", 数量: stats.fullTextReviewed },
+    { 指标: "全文复筛后排除", 数量: stats.fullTextExcluded },
+    { 指标: "最终纳入", 数量: stats.fullTextFinalIncluded },
+    { 指标: "待全文复筛", 数量: stats.fullTextPending },
     { 指标: "待定", 数量: stats.maybe },
     { 指标: "未解决冲突", 数量: stats.conflicts }
   ];
@@ -2544,6 +3044,74 @@ function hasEllipsis(value: string) {
 
 function normalizeTitle(value: string) {
   return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function matchPdfToReference(fileName: string, references: ReferenceRecord[]): PdfMatch | null {
+  const nameWithoutExtension = fileName.replace(/\.pdf$/i, "");
+  const looseFileName = normalizeTitle(nameWithoutExtension);
+  const doiMatches = references
+    .filter((reference) => {
+      const doi = normalizeLooseDoi(reference.doi);
+      return doi.length >= 8 && looseFileName.includes(doi);
+    })
+    .sort(comparePdfMatchReferences);
+  if (doiMatches.length) return { referenceId: doiMatches[0].id, method: "doi" };
+
+  const pmidMatches = references
+    .filter((reference) => {
+      const pmid = normalizePmid(reference.pmid);
+      return pmid.length >= 5 && new RegExp(`(^|[^0-9])${pmid}([^0-9]|$)`).test(nameWithoutExtension);
+    })
+    .sort(comparePdfMatchReferences);
+  if (pmidMatches.length) return { referenceId: pmidMatches[0].id, method: "pmid" };
+
+  const titleMatches = references
+    .filter((reference) => {
+      const title = normalizeTitle(reference.title);
+      return title.length >= 18 && (looseFileName.includes(title) || title.includes(looseFileName));
+    })
+    .sort(comparePdfMatchReferences);
+  if (titleMatches.length) return { referenceId: titleMatches[0].id, method: "title" };
+
+  return null;
+}
+
+function normalizeLooseDoi(value: string) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//, "")
+    .replace(/^doi:\s*/i, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function comparePdfMatchReferences(left: ReferenceRecord, right: ReferenceRecord) {
+  return pdfMatchPriority(right) - pdfMatchPriority(left) || left.id.localeCompare(right.id);
+}
+
+function pdfMatchPriority(reference: ReferenceRecord) {
+  return reference.duplicateStatus === "resolvedKept" ? 3 : reference.duplicateStatus === "unique" ? 2 : reference.duplicateStatus === "possible" ? 1 : 0;
+}
+
+function pdfMatchMethodLabel(method: PdfAttachment["matchMethod"]) {
+  return { doi: "DOI", pmid: "PMID", title: "题名" }[method];
+}
+
+function autoExtractionStatusLabel(run?: AutoExtractionRecord) {
+  if (!run) return "尚未提取";
+  if (run.status === "draft_needs_review") return `待核验草稿（${run.fieldsFound}/${run.fieldsTotal} 字段）`;
+  if (run.status === "no_text") return "未提取到可用文字";
+  return "提取失败";
+}
+
+function extractionEvidenceStatusLabel(evidence?: ExtractionEvidenceRecord, manualValue?: string) {
+  if (evidence?.status === "found") return "PDF 原文定位，待人工核验";
+  if (evidence?.status === "not_found") return "未从 PDF 自动确认";
+  if (manualValue?.trim()) return "人工填写，未关联自动证据";
+  return "尚未提取";
+}
+
+function isAutoExtractedValue(value?: string) {
+  return Boolean(value?.trim().startsWith("[PDF第"));
 }
 
 function duplicateLabel(status: ReferenceRecord["duplicateStatus"]) {

@@ -598,7 +598,10 @@ textarea:focus {
 }
 
 .metrics {
+  display: grid;
   gap: 8px;
+  grid-template-columns: repeat(3, minmax(70px, 1fr));
+  min-width: 0;
 }
 
 .metric {
@@ -1108,8 +1111,159 @@ textarea:focus {
   grid-template-columns: 150px minmax(240px, 1fr) 150px minmax(220px, 1fr);
 }
 
-.fieldChips {
+.fullTextActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.extractionActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  max-width: 760px;
+}
+
+.extractionActions .primaryButton,
+.extractionActions .secondaryButton,
+.extractionActions .ghostButton {
+  min-height: 40px;
+  width: auto;
+}
+
+.integrityNotice {
+  align-items: flex-start;
+  background: #f1f8ff;
+  border: 1px solid #b8d8f4;
+  border-radius: 8px;
+  color: #174d7b;
+  display: flex;
+  gap: 10px;
   margin-bottom: 12px;
+  padding: 12px;
+}
+
+.integrityNotice svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.integrityNotice strong,
+.integrityNotice span {
+  display: block;
+}
+
+.integrityNotice span {
+  color: #4b6d8a;
+  font-size: 12px;
+  line-height: 1.55;
+  margin-top: 3px;
+}
+
+.extractionProgress {
+  background: var(--amber-soft);
+  border: 1px solid #e6ca82;
+  border-radius: 8px;
+  color: #76520d;
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 12px;
+  overflow: hidden;
+  padding: 10px 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdfUploadAction {
+  background: #123a5e;
+  border-color: #123a5e;
+  color: #ffffff;
+}
+
+.pdfAttachment {
+  align-items: center;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+
+.pdfAttachment.attached {
+  background: #f1fbf7;
+  border-color: #b8dfcf;
+  color: #175c45;
+}
+
+.pdfAttachment.missing {
+  color: var(--muted);
+}
+
+.pdfAttachment > span {
+  font-size: 13px;
+  font-weight: 800;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdfAttachment small {
+  color: inherit;
+  font-size: 12px;
+}
+
+.pdfAttachment .smallButton {
+  margin-left: auto;
+  min-height: 30px;
+}
+
+.fieldChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.fieldGroupList {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+}
+
+.fieldGroup {
+  align-items: flex-start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+
+.fieldGroup > strong {
+  color: #315f8e;
+  font-size: 12px;
+  padding-top: 5px;
+}
+
+.fieldGroup .fieldChips {
+  margin-bottom: 0;
+}
+
+.fieldChip.standard {
+  background: #edf6ff;
+  border-color: #c7dff3;
+  color: #315f8e;
 }
 
 .extractionTableWrap {
@@ -1157,6 +1311,80 @@ textarea:focus {
 .extractionTable textarea {
   min-height: 76px;
   min-width: 190px;
+}
+
+.extractionPaperActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 9px 0 7px;
+}
+
+.autoExtractionStatus,
+.evidenceManual,
+.evidencePending,
+.evidenceMissing {
+  border-radius: 6px;
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.35;
+  margin-top: 7px;
+  padding: 5px 7px;
+  width: fit-content;
+}
+
+.autoExtractionStatus.draft_needs_review,
+.evidenceManual {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.autoExtractionStatus.no_text,
+.autoExtractionStatus.error,
+.evidenceMissing {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.autoExtractionStatus.pending,
+.evidencePending {
+  background: #edf2f7;
+  color: var(--muted);
+}
+
+.extractionWarning {
+  color: #7b5a1c;
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 6px;
+}
+
+.evidenceDetails {
+  background: #f4f9ff;
+  border: 1px solid #cfe2f4;
+  border-radius: 6px;
+  margin-top: 7px;
+  max-width: 360px;
+  padding: 6px 7px;
+}
+
+.evidenceDetails summary {
+  color: var(--blue-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.evidenceDetails p {
+  border-top: 1px solid #d8e8f6;
+  color: #3c5872;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  padding-top: 6px;
+  white-space: normal;
 }
 
 .exportGrid {
@@ -1253,6 +1481,21 @@ textarea:focus {
   .topActions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fullTextActions,
+  .extractionActions {
+    justify-content: flex-start;
+  }
+
+  .extractionActions .primaryButton,
+  .extractionActions .secondaryButton,
+  .extractionActions .ghostButton {
+    width: 100%;
+  }
+
+  .fieldGroup {
+    grid-template-columns: 1fr;
   }
 
   .primaryButton,

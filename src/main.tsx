@@ -42,7 +42,8 @@ import {
 import type { AutoExtractionRecord, ExtractionEvidenceRecord } from "./pdfExtraction";
 
 type Role = "reviewerA" | "reviewerB" | "adjudicator";
-type Stage = "titleAbstract" | "conflicts" | "fullText" | "extraction" | "exports" | "audit";
+type ReviewerRole = "reviewerA" | "reviewerB";
+type Stage = "titleAbstract" | "conflicts" | "fullText" | "analysisReview" | "extraction" | "exports" | "audit";
 type Decision = "include" | "maybe" | "exclude";
 type FullTextStatus = "notStarted" | "needed" | "retrieved" | "unavailable";
 
@@ -81,6 +82,7 @@ type ReferenceRecord = {
   decisions: Partial<Record<Role, ScreeningDecision>>;
   adjudication?: ScreeningDecision;
   fullText: FullTextReview;
+  analysisReview: AnalysisReview;
   extraction: Record<string, string>;
   extractionEvidence?: Record<string, ExtractionEvidenceRecord>;
   autoExtraction?: AutoExtractionRecord;
@@ -110,6 +112,11 @@ type FullTextReview = {
   reason: string;
   note: string;
   reviewedAt: string;
+};
+
+type AnalysisReview = {
+  decisions: Partial<Record<ReviewerRole, ScreeningDecision>>;
+  adjudication?: ScreeningDecision;
 };
 
 type PdfAttachment = {
@@ -159,6 +166,13 @@ type ProjectStats = {
   fullTextExcluded: number;
   fullTextPending: number;
   fullTextNotRetrieved: number;
+  analysisCandidates: number;
+  analysisReviewerA: number;
+  analysisReviewerB: number;
+  analysisConflicts: number;
+  analysisFinalIncluded: number;
+  analysisExcluded: number;
+  analysisPending: number;
 };
 
 const STORAGE_KEY = "meta_screening_project_v1";
@@ -303,6 +317,8 @@ type ProjectIndex = {
   finalIncluded: ReferenceRecord[];
   fullTextCandidates: ReferenceRecord[];
   fullTextFinalIncluded: ReferenceRecord[];
+  analysisCandidates: ReferenceRecord[];
+  analysisConflicts: ReferenceRecord[];
   extractionCandidates: ReferenceRecord[];
   stats: ProjectStats;
 };
@@ -392,7 +408,7 @@ function App() {
     [project.references, deferredFilters, role]
   );
   const active = projectIndex.byId.get(activeId) || visibleReferences[0] || project.references[0] || null;
-  const { conflicts, fullTextCandidates, extractionCandidates, stats } = projectIndex;
+  const { conflicts, fullTextCandidates, analysisCandidates, extractionCandidates, stats } = projectIndex;
   const repairablePubMedCount = React.useMemo(
     () => project.references.filter((reference) => needsPubMedRepair(reference)).length,
     [project.references]
@@ -693,6 +709,62 @@ function App() {
     }, role, "全文复筛", summarizeFullTextPatch(patch));
   }
 
+  function setAnalysisDecision(referenceId: string, decision: Decision, reason = "", note = "") {
+    if (role === "adjudicator") {
+      setMessage("裁决者不能代替筛选者 A/B 完成独立确认。");
+      return;
+    }
+    if (decision === "exclude" && !reason.trim()) {
+      const selected = window.prompt("排除最终 Meta 分析时必须记录理由：", project.exclusionReasons[0] || "");
+      if (!selected?.trim()) return;
+      reason = selected.trim();
+    }
+
+    updateReference(referenceId, (reference) => ({
+      ...reference,
+      analysisReview: {
+        ...reference.analysisReview,
+        adjudication: undefined,
+        decisions: {
+          ...reference.analysisReview.decisions,
+          [role]: {
+            decision,
+            reason,
+            note,
+            decidedBy: role,
+            decidedAt: nowIso()
+          }
+        }
+      }
+    }), role, "Meta 纳入独立确认", decisionLabels[decision]);
+  }
+
+  function adjudicateAnalysis(referenceId: string, decision: Decision, reason = "", note = "") {
+    if (role !== "adjudicator") {
+      setMessage("只有裁决者可以处理 Meta 纳入确认冲突。");
+      return;
+    }
+    if (decision === "exclude" && !reason.trim()) {
+      const selected = window.prompt("裁决为排除时必须记录理由：", project.exclusionReasons[0] || "");
+      if (!selected?.trim()) return;
+      reason = selected.trim();
+    }
+
+    updateReference(referenceId, (reference) => ({
+      ...reference,
+      analysisReview: {
+        ...reference.analysisReview,
+        adjudication: {
+          decision,
+          reason,
+          note,
+          decidedBy: role,
+          decidedAt: nowIso()
+        }
+      }
+    }), role, "Meta 纳入冲突裁决", decisionLabels[decision]);
+  }
+
   async function importFullTextPdfs(fileList: FileList | null, scope: "fullText" | "included" = "fullText") {
     if (!fileList?.length) return;
     if (!projectRef.current.references.length) {
@@ -712,7 +784,7 @@ function App() {
     const targetReferences = scope === "included" ? sourceIndex.extractionCandidates : sourceIndex.fullTextCandidates;
     if (!targetReferences.length) {
       setMessage(scope === "included"
-        ? "当前没有全文最终纳入条目，无法在数据提取板块匹配 PDF。"
+        ? "当前没有经 A/B 人工确认的最终 Meta 纳入条目，无法在数据提取板块匹配 PDF。"
         : "当前没有进入全文阶段的条目。请先完成双方题名摘要筛选并处理裁决，再上传 PDF。");
       return;
     }
@@ -1150,6 +1222,7 @@ function App() {
             <StageButton icon={<ListChecks size={17} />} label="题名摘要" active={stage === "titleAbstract"} count={stats.total} onClick={() => setStage("titleAbstract")} />
             <StageButton icon={<Eye size={17} />} label="揭盲冲突" active={stage === "conflicts"} count={conflicts.length} onClick={() => setStage("conflicts")} />
             <StageButton icon={<BookOpen size={17} />} label="全文复筛" active={stage === "fullText"} count={stats.fullTextCandidates} onClick={() => setStage("fullText")} />
+            <StageButton icon={<Users size={17} />} label="纳入确认" active={stage === "analysisReview"} count={stats.analysisPending} onClick={() => setStage("analysisReview")} />
             <StageButton icon={<Table2 size={17} />} label="数据提取" active={stage === "extraction"} count={extractionCandidates.length} onClick={() => setStage("extraction")} />
             <StageButton icon={<Download size={17} />} label="导出报告" active={stage === "exports"} count={4} onClick={() => setStage("exports")} />
             <StageButton icon={<History size={17} />} label="审计日志" active={stage === "audit"} count={project.auditLog.length} onClick={() => setStage("audit")} />
@@ -1189,6 +1262,18 @@ function App() {
               stats={stats}
               updateFullText={updateFullText}
               uploadPdfs={importFullTextPdfs}
+              openPdf={openFullTextPdf}
+            />
+          ) : null}
+
+          {stage === "analysisReview" ? (
+            <AnalysisReviewView
+              references={analysisCandidates}
+              role={role}
+              stats={stats}
+              reasons={project.exclusionReasons}
+              setDecision={setAnalysisDecision}
+              adjudicate={adjudicateAnalysis}
               openPdf={openFullTextPdf}
             />
           ) : null}
@@ -1243,6 +1328,8 @@ function StatusStrip({ stats, message, storageStatus, blindingRevealed, onReveal
         <Metric label="全文候选" value={stats.fullTextCandidates} />
         <Metric label="已复筛" value={stats.fullTextReviewed} />
         <Metric label="全文纳入" value={stats.fullTextFinalIncluded} />
+        <Metric label="待 A/B 确认" value={stats.analysisPending} />
+        <Metric label="Meta 纳入" value={stats.analysisFinalIncluded} />
         <Metric label="全文排除" value={stats.fullTextExcluded} />
         <Metric label="待复筛" value={stats.fullTextPending} />
       </div>
@@ -1658,6 +1745,167 @@ function FullTextView({
   );
 }
 
+type AnalysisReviewFilter = "all" | "minePending" | "conflict" | "included" | "excluded";
+
+function AnalysisReviewView({
+  references,
+  role,
+  stats,
+  reasons,
+  setDecision,
+  adjudicate,
+  openPdf
+}: {
+  references: ReferenceRecord[];
+  role: Role;
+  stats: ProjectStats;
+  reasons: string[];
+  setDecision: (referenceId: string, decision: Decision, reason?: string, note?: string) => void;
+  adjudicate: (referenceId: string, decision: Decision, reason?: string, note?: string) => void;
+  openPdf: (attachment: PdfAttachment) => void;
+}) {
+  const [filter, setFilter] = React.useState<AnalysisReviewFilter>("minePending");
+  const visibleReferences = React.useMemo(() => references.filter((reference) => {
+    if (filter === "all") return true;
+    if (filter === "conflict") return needsAnalysisAdjudication(reference);
+    if (filter === "included") return analysisFinalDecision(reference) === "include";
+    if (filter === "excluded") return analysisFinalDecision(reference) === "exclude";
+    if (role === "adjudicator") return needsAnalysisAdjudication(reference);
+    return !reference.analysisReview.decisions[role];
+  }), [filter, references, role]);
+  const paged = usePagedItems(visibleReferences, REVIEW_PAGE_SIZE, [visibleReferences.length, filter, role]);
+
+  return (
+    <section className="contentBlock">
+      <div className="sectionHeader analysisReviewHeader">
+        <div>
+          <p className="eyebrow">Independent eligibility confirmation</p>
+          <h2>最终分析纳入确认</h2>
+          <p className="helperText">全文复筛“纳入”仅代表候选研究。筛选者 A/B 在此独立确认刷牙频率暴露、预设慢病结局、研究设计和可提取效应量；双方决定完成前不显示对方选择。</p>
+        </div>
+        <div className="analysisReviewMetrics">
+          <span className="countBadge">候选 {stats.analysisCandidates}</span>
+          <span className="countBadge">A 已确认 {stats.analysisReviewerA}</span>
+          <span className="countBadge">B 已确认 {stats.analysisReviewerB}</span>
+          <span className="countBadge">冲突 {stats.analysisConflicts}</span>
+          <span className="countBadge">Meta 纳入 {stats.analysisFinalIncluded}</span>
+        </div>
+      </div>
+
+      <div className="analysisReviewToolbar">
+        <div className="roleNotice">
+          <Users size={17} />
+          <span>{role === "adjudicator" ? "当前为裁决者，只处理 A/B 冲突" : `当前以${roleLabels[role]}身份独立确认`}</span>
+        </div>
+        <label className="compactSelect">
+          <span>显示</span>
+          <select value={filter} onChange={(event) => setFilter(event.target.value as AnalysisReviewFilter)}>
+            <option value="minePending">{role === "adjudicator" ? "待裁决冲突" : "待我确认"}</option>
+            <option value="conflict">待裁决 / A/B 冲突</option>
+            <option value="included">最终 Meta 纳入</option>
+            <option value="excluded">最终排除</option>
+            <option value="all">全部候选</option>
+          </select>
+        </label>
+      </div>
+
+      <PaginationBar
+        endIndex={paged.endIndex}
+        label="纳入确认"
+        page={paged.page}
+        setPage={paged.setPage}
+        startIndex={paged.startIndex}
+        total={visibleReferences.length}
+        totalPages={paged.totalPages}
+      />
+
+      <div className="analysisReviewList">
+        {paged.pageItems.length === 0 ? <div className="blankState"><Check size={32} /><p>当前筛选条件下没有待处理研究。</p></div> : paged.pageItems.map((reference) => {
+          const decisionA = reference.analysisReview.decisions.reviewerA;
+          const decisionB = reference.analysisReview.decisions.reviewerB;
+          const bothComplete = Boolean(decisionA && decisionB);
+          const revealBoth = role === "adjudicator" || bothComplete;
+          const final = analysisFinalDecision(reference);
+          const conflict = isAnalysisConflict(reference);
+          const requiresAdjudication = needsAnalysisAdjudication(reference);
+          const ownDecision = role === "adjudicator" ? undefined : reference.analysisReview.decisions[role];
+
+          return (
+            <article className="analysisReviewCard" key={reference.id}>
+              <div className="analysisReviewTitle">
+                <div>
+                  <h3>{reference.title}</h3>
+                  <p>{[reference.authors, reference.year, reference.journal].filter(Boolean).join(" · ")}</p>
+                </div>
+                <div className="analysisReviewStatus">
+                  {conflict ? <span className="miniBadge maybe">A/B 冲突</span> : null}
+                  {!conflict && requiresAdjudication ? <span className="miniBadge maybe">双方待定，需裁决</span> : null}
+                  {final ? <span className={`miniBadge ${final}`}>最终：{decisionLabels[final]}</span> : <span className="miniBadge empty">尚无最终决定</span>}
+                </div>
+              </div>
+
+              <div className="eligibilityEvidenceGrid">
+                <EligibilityEvidence label="刷牙频率/暴露分组" value={reference.extraction["暴露分组"] || reference.extraction["刷牙行为定义"] || reference.extraction["暴露/干预"]} />
+                <EligibilityEvidence label="预设慢病结局" value={reference.extraction["结局类别"] || reference.extraction["结局指标"] || reference.extraction["结局定义"]} />
+                <EligibilityEvidence label="效应量与研究设计" value={[reference.extraction["研究设计"], reference.extraction["效应量"]].filter(Boolean).join("；")} />
+              </div>
+
+              <div className="analysisVoteRows">
+                <AnalysisVoteRow label="筛选者 A" decision={decisionA} hidden={!revealBoth && role !== "reviewerA"} />
+                <AnalysisVoteRow label="筛选者 B" decision={decisionB} hidden={!revealBoth && role !== "reviewerB"} />
+                <AnalysisVoteRow label="裁决结果" decision={reference.analysisReview.adjudication} hidden={false} />
+              </div>
+
+              <div className="analysisReviewActions">
+                {reference.fullText.pdf ? <button className="smallButton" onClick={() => openPdf(reference.fullText.pdf as PdfAttachment)} type="button"><FileText size={15} />打开 PDF</button> : <span className="evidenceMissing">未上传匹配 PDF</span>}
+                {role !== "adjudicator" ? (
+                  <>
+                    <span className="currentAnalysisDecision">我的决定：{ownDecision ? decisionLabels[ownDecision.decision] : "未确认"}</span>
+                    <div className="decisionButtons compact">
+                      <button className="includeButton" onClick={() => setDecision(reference.id, "include")} type="button">纳入 Meta</button>
+                      <button className="maybeButton" onClick={() => setDecision(reference.id, "maybe")} type="button">待定</button>
+                      <ReasonMenu reasons={reasons} onChoose={(reason) => setDecision(reference.id, "exclude", reason)} />
+                    </div>
+                  </>
+                ) : requiresAdjudication ? (
+                  <div className="decisionButtons compact">
+                    <button className="includeButton" onClick={() => adjudicate(reference.id, "include")} type="button">裁决纳入</button>
+                    <button className="maybeButton" onClick={() => adjudicate(reference.id, "maybe")} type="button">裁决待定</button>
+                    <ReasonMenu reasons={reasons} onChoose={(reason) => adjudicate(reference.id, "exclude", reason)} />
+                  </div>
+                ) : <span className="helperText">仅 A/B 决定不一致时需要裁决。</span>}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function EligibilityEvidence({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="eligibilityEvidence">
+      <strong>{label}</strong>
+      <p>{value?.trim() || "尚未提取，需打开全文人工确认"}</p>
+    </div>
+  );
+}
+
+function AnalysisVoteRow({ label, decision, hidden }: { label: string; decision?: ScreeningDecision; hidden: boolean }) {
+  return (
+    <div className="analysisVoteRow">
+      <span>{label}</span>
+      {hidden ? <strong className="blindDecision"><EyeOff size={14} />盲法隐藏</strong> : (
+        <>
+          <strong>{decision ? decisionLabels[decision.decision] : "未决定"}</strong>
+          <small>{decision?.reason || decision?.note || "无理由/备注"}</small>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ExtractionView({
   fields,
   references,
@@ -1719,7 +1967,7 @@ function ExtractionView({
 
   return (
     <section
-      aria-label="最终纳入文献与 Meta 数据提取工作区"
+      aria-label="经 A/B 确认纳入的文献与 Meta 数据提取工作区"
       className={`contentBlock extractionWorkspace${isFullscreen ? " isFullscreen" : ""}`}
       ref={workspaceRef}
       tabIndex={-1}
@@ -1771,8 +2019,8 @@ function ExtractionView({
       <div className="sectionHeader">
         <div>
           <p className="eyebrow">Data extraction</p>
-          <h2>最终纳入文献与 Meta 数据提取</h2>
-          <p className="helperText">上传仅匹配全文最终纳入条目。自动提取只复制 PDF 中可定位的原文并记录页码，不推断、不换算、不覆盖人工内容；所有结果在进入 Meta 前必须人工核验。</p>
+          <h2>最终 Meta 纳入研究与数据提取</h2>
+          <p className="helperText">本页仅显示经筛选者 A/B 一致确认或裁决纳入 Meta 的研究。自动提取只复制 PDF 中可定位的原文并记录页码，不推断、不换算、不覆盖人工内容。</p>
         </div>
         <div className="extractionActions">
           <span className="countBadge">纳入 {references.length}</span>
@@ -1914,8 +2162,8 @@ function ExportView({ exportCsv, exportExtraction, exportMissingFullText, export
       </div>
       <div className="exportGrid">
         <ExportCard icon={<FileSpreadsheet size={22} />} title="完整筛选记录 CSV" detail="包含题录、双人决定、裁决、全文复筛和最终状态。" onClick={exportCsv} />
-        <ExportCard icon={<FileSpreadsheet size={22} />} title="PRISMA 统计 CSV" detail={`当前总题录 ${stats.total} 条，全文复筛 ${stats.fullTextReviewed} 条，最终纳入 ${stats.fullTextFinalIncluded} 条。`} onClick={exportPrisma} />
-        <ExportCard icon={<Table2 size={22} />} title="数据提取表 CSV" detail="导出最终纳入文献的自定义数据提取字段。" onClick={exportExtraction} />
+        <ExportCard icon={<FileSpreadsheet size={22} />} title="PRISMA 统计 CSV" detail={`当前全文候选纳入 ${stats.fullTextFinalIncluded} 条，经 A/B 确认后 Meta 纳入 ${stats.analysisFinalIncluded} 条。`} onClick={exportPrisma} />
+        <ExportCard icon={<Table2 size={22} />} title="数据提取表 CSV" detail="仅导出经 A/B 一致确认或裁决纳入 Meta 的研究。" onClick={exportExtraction} />
         <ExportCard icon={<FileDown size={22} />} title="未上传全文候选 CSV" detail="导出待获取全文文献的标题、作者、DOI、PMID 和来源信息。" onClick={exportMissingFullText} />
         <ExportCard icon={<FileText size={22} />} title="Word 报告草稿" detail="生成可放入论文方法部分的筛选流程与统计草稿。" onClick={exportWordReport} />
       </div>
@@ -2070,8 +2318,18 @@ function isValidProject(value: unknown): value is ReviewProject {
 
 function migrateProjectSchema(project: ReviewProject): ReviewProject {
   const extractionFields = mergeExtractionFields(project.extractionFields || []);
-  if (extractionFields.length === project.extractionFields?.length) return project;
-  return { ...project, extractionFields };
+  let referencesChanged = false;
+  const references = project.references.map((reference) => {
+    if (reference.analysisReview?.decisions) return reference;
+    referencesChanged = true;
+    return {
+      ...reference,
+      analysisReview: { decisions: {} }
+    };
+  });
+  const fieldsChanged = extractionFields.length !== project.extractionFields?.length;
+  if (!fieldsChanged && !referencesChanged) return project;
+  return { ...project, extractionFields, references };
 }
 
 function mergeExtractionFields(fields: string[]) {
@@ -2153,6 +2411,8 @@ function estimateProjectBytes(project: ReviewProject) {
     characters += reference.doi.length + reference.pmid.length + reference.database.length + reference.keywords.length + reference.notes.length;
     characters += (reference.translation?.titleZh || "").length + (reference.translation?.abstractZh || "").length;
     characters += Object.keys(reference.decisions).length * 180;
+    characters += Object.keys(reference.analysisReview?.decisions || {}).length * 180;
+    characters += reference.analysisReview?.adjudication ? 180 : 0;
     characters += Object.values(reference.extraction).join("").length;
     characters += JSON.stringify(reference.extractionEvidence || {}).length;
     characters += JSON.stringify(reference.autoExtraction || {}).length;
@@ -2327,6 +2587,7 @@ function createReference(input: Partial<ReferenceRecord>): ReferenceRecord {
       note: "",
       reviewedAt: ""
     },
+    analysisReview: { decisions: {} },
     extraction: {},
     notes: ""
   };
@@ -2886,6 +3147,26 @@ function finalDecision(reference: ReferenceRecord): Decision | "" {
   return a && b && a === b ? a : "";
 }
 
+function isAnalysisConflict(reference: ReferenceRecord): boolean {
+  const a = reference.analysisReview?.decisions.reviewerA?.decision;
+  const b = reference.analysisReview?.decisions.reviewerB?.decision;
+  return Boolean(a && b && a !== b && !reference.analysisReview?.adjudication);
+}
+
+function needsAnalysisAdjudication(reference: ReferenceRecord): boolean {
+  if (reference.analysisReview?.adjudication) return false;
+  const a = reference.analysisReview?.decisions.reviewerA?.decision;
+  const b = reference.analysisReview?.decisions.reviewerB?.decision;
+  return Boolean(a && b && (a !== b || a === "maybe"));
+}
+
+function analysisFinalDecision(reference: ReferenceRecord): Decision | "" {
+  if (reference.analysisReview?.adjudication) return reference.analysisReview.adjudication.decision;
+  const a = reference.analysisReview?.decisions.reviewerA?.decision;
+  const b = reference.analysisReview?.decisions.reviewerB?.decision;
+  return a && b && a === b && a !== "maybe" ? a : "";
+}
+
 function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
   const byId = new Map<string, ReferenceRecord>();
   const conflicts: ReferenceRecord[] = [];
@@ -2931,7 +3212,13 @@ function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
   }
 
   const fullTextPending = Math.max(fullTextCandidates.length - fullTextReviewed, 0);
-  const extractionCandidates = fullTextReviewed > 0 ? fullTextFinalIncluded : finalIncluded;
+  const analysisCandidates = fullTextReviewed > 0 ? fullTextFinalIncluded : finalIncluded;
+  const analysisConflicts = analysisCandidates.filter(isAnalysisConflict);
+  const analysisReviewerA = analysisCandidates.filter((reference) => reference.analysisReview?.decisions.reviewerA).length;
+  const analysisReviewerB = analysisCandidates.filter((reference) => reference.analysisReview?.decisions.reviewerB).length;
+  const extractionCandidates = analysisCandidates.filter((reference) => analysisFinalDecision(reference) === "include");
+  const analysisExcluded = analysisCandidates.filter((reference) => analysisFinalDecision(reference) === "exclude").length;
+  const analysisPending = Math.max(analysisCandidates.length - extractionCandidates.length - analysisExcluded, 0);
 
   return {
     byId,
@@ -2939,6 +3226,8 @@ function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
     finalIncluded,
     fullTextCandidates,
     fullTextFinalIncluded,
+    analysisCandidates,
+    analysisConflicts,
     extractionCandidates,
     stats: {
       total: references.length,
@@ -2954,7 +3243,14 @@ function buildProjectIndex(references: ReferenceRecord[]): ProjectIndex {
       fullTextFinalIncluded: fullTextFinalIncluded.length,
       fullTextExcluded,
       fullTextPending,
-      fullTextNotRetrieved
+      fullTextNotRetrieved,
+      analysisCandidates: analysisCandidates.length,
+      analysisReviewerA,
+      analysisReviewerB,
+      analysisConflicts: analysisConflicts.length,
+      analysisFinalIncluded: extractionCandidates.length,
+      analysisExcluded,
+      analysisPending
     }
   };
 }
@@ -2988,6 +3284,13 @@ function buildExportRows(project: ReviewProject) {
     PDF匹配方式: reference.fullText.pdf ? pdfMatchMethodLabel(reference.fullText.pdf.matchMethod) : "",
     全文决定: reference.fullText.decision ? decisionLabels[reference.fullText.decision] : "",
     全文排除理由: reference.fullText.reason,
+    Meta确认A: reference.analysisReview?.decisions.reviewerA ? decisionLabels[reference.analysisReview.decisions.reviewerA.decision] : "",
+    Meta确认A理由: reference.analysisReview?.decisions.reviewerA?.reason || "",
+    Meta确认B: reference.analysisReview?.decisions.reviewerB ? decisionLabels[reference.analysisReview.decisions.reviewerB.decision] : "",
+    Meta确认B理由: reference.analysisReview?.decisions.reviewerB?.reason || "",
+    Meta确认裁决: reference.analysisReview?.adjudication ? decisionLabels[reference.analysisReview.adjudication.decision] : "",
+    Meta确认裁决理由: reference.analysisReview?.adjudication?.reason || "",
+    最终Meta决定: analysisFinalDecision(reference) ? decisionLabels[analysisFinalDecision(reference) as Decision] : "",
     备注: reference.notes
   }));
 }
@@ -3002,7 +3305,11 @@ function buildPrismaRows(stats: ProjectStats) {
     { 指标: "未获取全文报告", 数量: stats.fullTextNotRetrieved },
     { 指标: "完成全文复筛", 数量: stats.fullTextReviewed },
     { 指标: "全文复筛后排除", 数量: stats.fullTextExcluded },
-    { 指标: "最终纳入", 数量: stats.fullTextFinalIncluded },
+    { 指标: "全文复筛后候选纳入", 数量: stats.fullTextFinalIncluded },
+    { 指标: "进入A/B最终分析确认", 数量: stats.analysisCandidates },
+    { 指标: "A/B最终分析确认冲突", 数量: stats.analysisConflicts },
+    { 指标: "最终纳入Meta分析", 数量: stats.analysisFinalIncluded },
+    { 指标: "待A/B最终分析确认", 数量: stats.analysisPending },
     { 指标: "待全文复筛", 数量: stats.fullTextPending },
     { 指标: "待定", 数量: stats.maybe },
     { 指标: "未解决冲突", 数量: stats.conflicts }
@@ -3017,7 +3324,7 @@ function buildWordReport(project: ReviewProject, stats: ProjectStats) {
     <h2>检索来源</h2><p>${project.databases.map(escapeHtml).join("；")}。检索日期：${escapeHtml(project.searchDate)}</p>
     <h2>筛选流程</h2>
     <p>本项目采用双人独立盲法筛选。筛选者 A 为 ${escapeHtml(project.reviewerA)}，筛选者 B 为 ${escapeHtml(project.reviewerB)}。两名筛选者完成题名摘要筛选后揭盲，不一致记录由 ${escapeHtml(project.adjudicator)} 进行第三人裁决。</p>
-    <p>全文复筛阶段记录全文获取状态、本机 PDF 路径、全文纳入或排除决定及排除理由。最终纳入文献进入自定义数据提取表。</p>
+    <p>全文复筛阶段记录全文获取状态、本机 PDF 路径、全文候选纳入或排除决定及理由。全文候选纳入研究再由筛选者 A/B 独立确认是否进入 Meta 分析，分歧由裁决者处理；仅最终确认纳入的研究进入数据提取表。</p>
     <h2>PRISMA 统计草表</h2><table border="1" cellspacing="0" cellpadding="6"><tbody>${rows}</tbody></table>
     <h2>说明</h2><p>本报告由本地 Meta 文献筛选工作台自动生成，具体排除理由和审计日志请以导出的完整筛选记录为准。</p>
   </body></html>`;

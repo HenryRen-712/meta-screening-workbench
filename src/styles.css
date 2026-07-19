@@ -1119,6 +1119,182 @@ textarea:focus {
   justify-content: flex-end;
 }
 
+.analysisReviewHeader {
+  align-items: flex-start;
+}
+
+.analysisReviewMetrics,
+.analysisReviewToolbar,
+.analysisReviewTitle,
+.analysisReviewStatus,
+.analysisReviewActions,
+.roleNotice,
+.compactSelect,
+.blindDecision {
+  align-items: center;
+  display: flex;
+}
+
+.analysisReviewMetrics,
+.analysisReviewStatus {
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.analysisReviewToolbar {
+  background: #f2f8ff;
+  border: 1px solid #c6dff4;
+  border-radius: 8px;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
+
+.roleNotice {
+  color: #24577f;
+  font-size: 13px;
+  font-weight: 850;
+  gap: 8px;
+}
+
+.compactSelect {
+  flex: 0 0 auto;
+  gap: 7px;
+  margin: 0;
+}
+
+.compactSelect span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.compactSelect select {
+  min-width: 160px;
+  width: auto;
+}
+
+.analysisReviewList {
+  display: grid;
+  gap: 10px;
+}
+
+.analysisReviewCard {
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.analysisReviewTitle {
+  align-items: flex-start;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.analysisReviewTitle > div:first-child {
+  min-width: 0;
+}
+
+.analysisReviewTitle h3,
+.analysisReviewTitle p {
+  overflow-wrap: anywhere;
+}
+
+.analysisReviewTitle p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.eligibilityEvidenceGrid {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 12px 0;
+}
+
+.eligibilityEvidence {
+  min-width: 0;
+  padding: 11px 12px;
+}
+
+.eligibilityEvidence + .eligibilityEvidence {
+  border-left: 1px solid var(--line);
+}
+
+.eligibilityEvidence strong {
+  color: #315f8e;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.eligibilityEvidence p {
+  color: var(--text);
+  display: -webkit-box;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.analysisVoteRows {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.analysisVoteRow {
+  background: var(--surface-soft);
+  border-left: 3px solid #b9d9f5;
+  display: grid;
+  gap: 3px;
+  min-height: 66px;
+  padding: 9px 10px;
+}
+
+.analysisVoteRow > span,
+.analysisVoteRow small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.analysisVoteRow strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.blindDecision {
+  color: #315f8e !important;
+  gap: 5px;
+}
+
+.analysisReviewActions {
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.analysisReviewActions > .smallButton,
+.analysisReviewActions > .evidenceMissing {
+  margin-right: auto;
+}
+
+.currentAnalysisDecision {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
 .extractionActions {
   align-items: center;
   display: flex;
@@ -1611,7 +1787,9 @@ textarea:focus {
   .topBar,
   .decisionPanel,
   .sectionHeader,
-  .paperHeader {
+  .paperHeader,
+  .analysisReviewToolbar,
+  .analysisReviewTitle {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1622,9 +1800,27 @@ textarea:focus {
   .metadataGrid,
   .voteGrid,
   .fullTextGrid,
+  .eligibilityEvidenceGrid,
+  .analysisVoteRows,
   .exportGrid,
   .importActions {
     grid-template-columns: 1fr;
+  }
+
+  .eligibilityEvidence + .eligibilityEvidence {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .analysisReviewMetrics,
+  .analysisReviewStatus,
+  .analysisReviewActions {
+    justify-content: flex-start;
+  }
+
+  .analysisReviewActions > .smallButton,
+  .analysisReviewActions > .evidenceMissing {
+    margin-right: 0;
   }
 
   .metrics,

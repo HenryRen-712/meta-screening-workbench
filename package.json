@@ -19,6 +19,7 @@
     "lucide-react": "latest",
     "multer": "latest",
     "pdf-parse": "latest",
+    "pdfjs-dist": "5.4.296",
     "typescript": "latest",
     "vite": "latest",
     "xlsx": "latest",

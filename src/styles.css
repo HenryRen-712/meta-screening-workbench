@@ -191,6 +191,7 @@ h3 {
 .panelBlock,
 .contentBlock,
 .statusStrip,
+.updateNotice,
 .listPane,
 .detailPane {
   background: var(--surface);
@@ -569,6 +570,74 @@ textarea:focus {
   grid-template-columns: minmax(240px, 1fr) auto auto;
   min-height: 86px;
   padding: 14px;
+}
+
+.updateNotice {
+  align-items: center;
+  background: #ffffff;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.updateNotice.available {
+  border-left: 4px solid var(--green);
+}
+
+.updateNotice.incompatible {
+  border-left: 4px solid var(--amber);
+}
+
+.updateNoticeTitle {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 14px;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.updateNoticeTitle svg {
+  color: var(--green);
+}
+
+.updateNotice.incompatible .updateNoticeTitle svg {
+  color: var(--amber);
+}
+
+.updateNotice p {
+  color: #31506e;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.updateBadge {
+  background: var(--green-soft);
+  border: 1px solid #bfe0d2;
+  border-radius: 999px;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 4px 8px;
+}
+
+.updateNotice.incompatible .updateBadge {
+  background: var(--amber-soft);
+  border-color: #e7d3a3;
+  color: var(--amber);
+}
+
+.updateNoticeActions {
+  display: flex;
+  gap: 8px;
+}
+
+.updateNoticeActions .primaryButton,
+.updateNoticeActions .ghostButton {
+  min-height: 40px;
 }
 
 .statusPill {
@@ -1774,6 +1843,11 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .updateNotice {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
   .referenceList {
     max-height: 360px;
   }
@@ -1814,7 +1888,8 @@ textarea:focus {
 
   .analysisReviewMetrics,
   .analysisReviewStatus,
-  .analysisReviewActions {
+  .analysisReviewActions,
+  .updateNoticeActions {
     justify-content: flex-start;
   }
 
@@ -1836,7 +1911,9 @@ textarea:focus {
 
   .extractionActions .primaryButton,
   .extractionActions .secondaryButton,
-  .extractionActions .ghostButton {
+  .extractionActions .ghostButton,
+  .updateNoticeActions .primaryButton,
+  .updateNoticeActions .ghostButton {
     width: 100%;
   }
 

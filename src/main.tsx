@@ -60,9 +60,18 @@ type ReviewProject = {
   extractionFields: string[];
   references: ReferenceRecord[];
   auditLog: AuditEntry[];
+  appliedUpdates: AppliedUpdateRecord[];
   createdAt: string;
   updatedAt: string;
   blindingRevealed: boolean;
+};
+
+type AppliedUpdateRecord = {
+  updateId: string;
+  label: string;
+  appliedAt: string;
+  addedReferences: number;
+  addedAuditEntries: number;
 };
 
 type ReferenceRecord = {
@@ -175,6 +184,33 @@ type ProjectStats = {
   analysisPending: number;
 };
 
+type ScreeningUpdatePackage = {
+  updateId: string;
+  label: string;
+  createdAt: string;
+  baseProjectId: string;
+  expectedBaseReferenceCount: number;
+  references: ReferenceRecord[];
+  auditEntries: AuditEntry[];
+  summary: {
+    sourceRows: number;
+    addedReferences: number;
+    alreadyInOldProject: number;
+    reviewerBInclude: number;
+    reviewerBMaybe: number;
+    reviewerBExclude: number;
+    blinding: string;
+    methodologicalNote: string;
+  };
+};
+
+type ScreeningUpdateApplicability = {
+  status: "available" | "applied" | "incompatible" | "notApplicable";
+  message: string;
+  detail: string;
+  canApply: boolean;
+};
+
 const STORAGE_KEY = "meta_screening_project_v1";
 const STORAGE_META_KEY = `${STORAGE_KEY}_meta`;
 const STORAGE_DB_NAME = "meta_screening_project_db";
@@ -187,6 +223,7 @@ const AUDIT_PAGE_SIZE = 80;
 const LARGE_PROJECT_REFERENCE_COUNT = 5000;
 const AUTOSAVE_DELAY_MS = 2500;
 const MAX_LOCAL_STORAGE_BACKUP_BYTES = 4 * 1024 * 1024;
+const SCREENING_UPDATE_PATH = "updates/embase-reviewer-b-20260727.json";
 const roleLabels: Record<Role, string> = {
   reviewerA: "筛选者 A",
   reviewerB: "筛选者 B",
@@ -333,6 +370,9 @@ function App() {
   const [message, setMessage] = React.useState("项目已保存在本机浏览器，可随时导出备份。");
   const [storageReady, setStorageReady] = React.useState(false);
   const [storageStatus, setStorageStatus] = React.useState("正在检查本机保存状态");
+  const [screeningUpdatePackage, setScreeningUpdatePackage] = React.useState<ScreeningUpdatePackage | null>(null);
+  const [screeningUpdateDismissed, setScreeningUpdateDismissed] = React.useState(false);
+  const [screeningUpdateApplying, setScreeningUpdateApplying] = React.useState(false);
   const [abstractEnrichmentRunning, setAbstractEnrichmentRunning] = React.useState(false);
   const [autoExtractionRunning, setAutoExtractionRunning] = React.useState(false);
   const [autoExtractionProgress, setAutoExtractionProgress] = React.useState("");
@@ -367,6 +407,21 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!storageReady) return;
+    let cancelled = false;
+    loadScreeningUpdatePackage()
+      .then((updatePackage) => {
+        if (!cancelled) setScreeningUpdatePackage(updatePackage);
+      })
+      .catch(() => {
+        if (!cancelled) setScreeningUpdatePackage(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storageReady]);
 
   React.useEffect(() => {
     if (!storageReady) return;
@@ -409,6 +464,10 @@ function App() {
   );
   const active = projectIndex.byId.get(activeId) || visibleReferences[0] || project.references[0] || null;
   const { conflicts, fullTextCandidates, analysisCandidates, extractionCandidates, stats } = projectIndex;
+  const screeningUpdate = React.useMemo(
+    () => screeningUpdatePackage ? evaluateScreeningUpdate(project, screeningUpdatePackage) : null,
+    [project, screeningUpdatePackage]
+  );
   const repairablePubMedCount = React.useMemo(
     () => project.references.filter((reference) => needsPubMedRepair(reference)).length,
     [project.references]
@@ -1096,6 +1155,32 @@ function App() {
     downloadText(html, `${safeFileName(project.title)}_筛选报告.doc`, "application/msword;charset=utf-8");
   }
 
+  async function applyScreeningUpdate() {
+    if (!screeningUpdatePackage || screeningUpdateApplying) return;
+    const currentEvaluation = evaluateScreeningUpdate(projectRef.current, screeningUpdatePackage);
+    if (!currentEvaluation.canApply) {
+      setMessage(currentEvaluation.message);
+      return;
+    }
+
+    setScreeningUpdateApplying(true);
+    setMessage("正在应用 Embase 新增双筛更新，并写入本机项目。");
+    try {
+      const merge = mergeScreeningUpdate(projectRef.current, screeningUpdatePackage, role);
+      const nextProject = { ...merge.project, updatedAt: nowIso() };
+      projectRef.current = nextProject;
+      setProject(nextProject);
+      setActiveId(merge.firstAddedReferenceId || nextProject.references[0]?.id || "");
+      setScreeningUpdateDismissed(true);
+      await persistProjectNow(nextProject);
+      setMessage(`已应用 Embase 新增双筛更新：新增 ${merge.addedReferences} 条题录，合并 ${merge.addedAuditEntries} 条 B 筛选审计记录；盲法状态保持不揭盲。`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "应用增量更新失败。请改用完整 JSON 备份恢复项目。");
+    } finally {
+      setScreeningUpdateApplying(false);
+    }
+  }
+
   return (
     <main className="appShell">
       <header className="topBar">
@@ -1230,6 +1315,16 @@ function App() {
         </aside>
 
         <section className="mainPanel">
+          {screeningUpdate && !screeningUpdateDismissed && screeningUpdate.status !== "applied" && screeningUpdate.status !== "notApplicable" ? (
+            <ScreeningUpdateNotice
+              applying={screeningUpdateApplying}
+              update={screeningUpdatePackage}
+              state={screeningUpdate}
+              onApply={() => { void applyScreeningUpdate(); }}
+              onDismiss={() => setScreeningUpdateDismissed(true)}
+            />
+          ) : null}
+
           <StatusStrip stats={stats} message={message} storageStatus={storageStatus} blindingRevealed={project.blindingRevealed} onReveal={revealBlinding} />
 
           {stage === "titleAbstract" ? (
@@ -1309,6 +1404,48 @@ function App() {
         </section>
       </section>
     </main>
+  );
+}
+
+function ScreeningUpdateNotice({
+  applying,
+  onApply,
+  onDismiss,
+  state,
+  update
+}: {
+  applying: boolean;
+  onApply: () => void;
+  onDismiss: () => void;
+  state: ScreeningUpdateApplicability;
+  update: ScreeningUpdatePackage | null;
+}) {
+  const summary = update?.summary;
+  const countLine = summary
+    ? `新增 ${summary.addedReferences} 条；B 筛选：排除 ${summary.reviewerBExclude} 条，待定 ${summary.reviewerBMaybe} 条，纳入 ${summary.reviewerBInclude} 条。`
+    : "";
+
+  return (
+    <section className={`updateNotice ${state.status}`}>
+      <div>
+        <div className="updateNoticeTitle">
+          <Import size={18} />
+          <strong>{state.status === "available" ? "检测到 Embase 新增双筛更新" : "当前项目不能自动应用增量更新"}</strong>
+          {update ? <span className="updateBadge">{update.label}</span> : null}
+        </div>
+        <p>{state.message}</p>
+        <p className="helperText">{[state.detail, countLine].filter(Boolean).join(" ")}</p>
+      </div>
+      <div className="updateNoticeActions">
+        {state.canApply ? (
+          <button className="primaryButton" disabled={applying} onClick={onApply} type="button">
+            <Import size={17} />
+            {applying ? "应用中" : "应用更新"}
+          </button>
+        ) : null}
+        <button className="ghostButton" onClick={onDismiss} type="button">稍后处理</button>
+      </div>
+    </section>
   );
 }
 
@@ -2297,6 +2434,112 @@ type BrowserSaveResult = {
   bytes: number;
 };
 
+async function loadScreeningUpdatePackage(): Promise<ScreeningUpdatePackage> {
+  const response = await fetch(`${import.meta.env.BASE_URL}${SCREENING_UPDATE_PATH}`, { cache: "no-cache" });
+  if (!response.ok) throw new Error("Screening update package is not available");
+  const updatePackage = await response.json();
+  if (!isValidScreeningUpdatePackage(updatePackage)) throw new Error("Invalid screening update package");
+  return updatePackage;
+}
+
+function isValidScreeningUpdatePackage(value: unknown): value is ScreeningUpdatePackage {
+  const candidate = value as Partial<ScreeningUpdatePackage> | null;
+  if (!candidate || typeof candidate.updateId !== "string" || typeof candidate.baseProjectId !== "string") return false;
+  if (typeof candidate.expectedBaseReferenceCount !== "number" || !Number.isFinite(candidate.expectedBaseReferenceCount)) return false;
+  if (!Array.isArray(candidate.references) || !Array.isArray(candidate.auditEntries)) return false;
+  if (!candidate.references.every((reference) => Boolean(reference?.id && reference?.title && reference?.decisions))) return false;
+  return Boolean(candidate.summary && Number.isFinite(candidate.summary.addedReferences));
+}
+
+function evaluateScreeningUpdate(project: ReviewProject, updatePackage: ScreeningUpdatePackage): ScreeningUpdateApplicability {
+  const appliedByHistory = Boolean(project.appliedUpdates?.some((item) => item.updateId === updatePackage.updateId));
+  const existingReferenceIds = new Set(project.references.map((reference) => reference.id));
+  const existingUpdateReferences = updatePackage.references.filter((reference) => existingReferenceIds.has(reference.id)).length;
+  const allUpdateReferencesPresent = existingUpdateReferences === updatePackage.references.length;
+
+  if (appliedByHistory || allUpdateReferencesPresent) {
+    return {
+      status: "applied",
+      message: "当前项目已经包含 Embase 新增双筛记录。",
+      detail: `已识别 ${updatePackage.references.length} 条增量题录，不会重复导入。`,
+      canApply: false
+    };
+  }
+
+  if (project.id !== updatePackage.baseProjectId) {
+    return {
+      status: "notApplicable",
+      message: "该更新包不属于当前项目。",
+      detail: "项目 ID 与增量包基线不一致。",
+      canApply: false
+    };
+  }
+
+  if (project.references.length !== updatePackage.expectedBaseReferenceCount) {
+    return {
+      status: "incompatible",
+      message: "当前浏览器项目不是 7801 条基线版本，不能自动合并。",
+      detail: `当前项目为 ${project.references.length} 条，增量包要求基线为 ${updatePackage.expectedBaseReferenceCount} 条。请使用完整 JSON 备份恢复，或先人工核对后再导入。`,
+      canApply: false
+    };
+  }
+
+  if (existingUpdateReferences > 0) {
+    return {
+      status: "incompatible",
+      message: "当前项目已包含部分 Embase 增量记录，不能自动合并。",
+      detail: `已发现 ${existingUpdateReferences}/${updatePackage.references.length} 条增量题录。为避免重复计数，请改用完整 JSON 备份恢复或人工核对。`,
+      canApply: false
+    };
+  }
+
+  return {
+    status: "available",
+    message: "当前项目符合 7801 条基线，可合并 209 条新增 Embase 记录及筛选者 B 的独立题摘决定。",
+    detail: "合并只会追加新增记录和 B 决定，不覆盖旧题录、不改写筛选者 A 决定，并保持盲筛未揭盲。",
+    canApply: true
+  };
+}
+
+function mergeScreeningUpdate(project: ReviewProject, updatePackage: ScreeningUpdatePackage, actor: Role) {
+  const currentState = evaluateScreeningUpdate(project, updatePackage);
+  if (!currentState.canApply) throw new Error(currentState.message);
+
+  const existingReferenceIds = new Set(project.references.map((reference) => reference.id));
+  const referencesToAdd = updatePackage.references.filter((reference) => !existingReferenceIds.has(reference.id));
+  const existingAuditIds = new Set(project.auditLog.map((entry) => entry.id));
+  const auditEntriesToAdd = updatePackage.auditEntries.filter((entry) => !existingAuditIds.has(entry.id));
+  const appliedAt = nowIso();
+  const applicationAudit = createAudit(
+    actor,
+    "应用增量更新",
+    updatePackage.label,
+    `新增 ${referencesToAdd.length} 条题录；合并 ${auditEntriesToAdd.length} 条审计记录；未揭盲`
+  );
+
+  return {
+    addedReferences: referencesToAdd.length,
+    addedAuditEntries: auditEntriesToAdd.length,
+    firstAddedReferenceId: referencesToAdd[0]?.id || "",
+    project: {
+      ...project,
+      references: [...project.references, ...referencesToAdd],
+      auditLog: [applicationAudit, ...project.auditLog, ...auditEntriesToAdd],
+      appliedUpdates: [
+        ...(project.appliedUpdates || []),
+        {
+          updateId: updatePackage.updateId,
+          label: updatePackage.label,
+          appliedAt,
+          addedReferences: referencesToAdd.length,
+          addedAuditEntries: auditEntriesToAdd.length
+        }
+      ],
+      blindingRevealed: project.blindingRevealed
+    }
+  };
+}
+
 function readProject(): ReviewProject {
   return readProjectFromLocalStorage() || createSeedProject(true);
 }
@@ -2318,6 +2561,7 @@ function isValidProject(value: unknown): value is ReviewProject {
 
 function migrateProjectSchema(project: ReviewProject): ReviewProject {
   const extractionFields = mergeExtractionFields(project.extractionFields || []);
+  const appliedUpdates = Array.isArray(project.appliedUpdates) ? project.appliedUpdates : [];
   let referencesChanged = false;
   const references = project.references.map((reference) => {
     if (reference.analysisReview?.decisions) return reference;
@@ -2328,8 +2572,9 @@ function migrateProjectSchema(project: ReviewProject): ReviewProject {
     };
   });
   const fieldsChanged = extractionFields.length !== project.extractionFields?.length;
-  if (!fieldsChanged && !referencesChanged) return project;
-  return { ...project, extractionFields, references };
+  const updatesChanged = appliedUpdates !== project.appliedUpdates;
+  if (!fieldsChanged && !referencesChanged && !updatesChanged) return project;
+  return { ...project, extractionFields, references, appliedUpdates };
 }
 
 function mergeExtractionFields(fields: string[]) {
@@ -2558,6 +2803,7 @@ function createSeedProject(withExamples: boolean): ReviewProject {
     extractionFields: defaultExtractionFields,
     references,
     auditLog: [createAudit("adjudicator", "创建项目", "项目", withExamples ? "已载入示例题录" : "空白项目")],
+    appliedUpdates: [],
     createdAt: nowIso(),
     updatedAt: nowIso(),
     blindingRevealed: false
